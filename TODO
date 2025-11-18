@@ -1,0 +1,80 @@
+Organizar
+    - Pastas e Subpastas (treemap)
+    - Cada pasta deve ser, trabalha melhor como sendo, um "subject"/tópico individual.
+        -> Com isto quero dizer que cada pasta (principais) deve ter a sua própria análise.
+    - Exportação
+    - Links entre ficheiros (Obsidian)
+    - Tags  (Obsidian)
+    - Linguagem Markdown
+    - Grafo???
+
+    - Tem que ser possível guardar todo o tipo de ficheiros
+
+Tempo
+    - Calendário
+    - Temporizadores
+    - Auxiliar de Concentração
+    - Repetição
+
+Psicologia
+    - Questionário de como correu (após sessão)
+    - Dificuldade 0-5
+
+
+OLM (vísivel)
+    - Cada tópico deve ter um dashboard separado
+    - Página inicial (como se fosse o vault) deverá ter um dashboard global, um apanhado de tudo
+    Conjunto Geral:
+        - Dias seguidos de estudo (independende de o quê)
+        - Frase tendo em conta o estado geral da semana
+        - Ultimas sessões (com mapa de cores de como correu, gradiente de verde paara vermelho)
+        - Sugesetão???
+        - Calendário
+
+    Individual por Tópico:
+        - Calendário, próximas sessões
+        - Streak de sessões programadas
+        - Dificuldade sentida "média"
+        - Frase
+            ...
+
+Preocupações
+    Importação e visualização de ficheiros (PDF, word, txt, png, jpeg, Obsidian)
+    Denominação do tipo (avaliação, recurso de estudo, notas....) Como identificar, componente automática + input ou ignorar
+    Integrar flashcards e algoritmo de repetição (Anki)
+    Linguagem
+    Arquitetura 
+    Produzir o papel
+
+
+O que deve ser estudado
+    - Tudo para cima faz (deve fazer) parte do protótipo deixar para o fim
+    - IMPORTANTE - Pesquisar, entender, personalizar OML e demonstrar cientificamente porque funcionará neste caso e porquê
+
+
+
+Framework conceptual
+    Problema
+        Quando tenho vontade de aprender algo busco ser o mais eficiente possível, desde a parte onde tiro notas até pensar onde as coloco e organizo.
+        Perdendo mais tempo a estruturar o espaço do que a aprender algo. Caso passe este passo perco-me pelo caminho e desmotivo.
+        Sabendo que é um problema recorrente onde várias pessoas buscam soluções parciais para os seus problemas e recorrem à utilização de plugins desenvolvidos pela própria comunidade.
+        Desejo desenvolver a framework do qual agrupa esses problemas e aglomera todas as suas soluções num produto.
+    
+    Gimmick
+        Esta plataforma não pretende ensinar nada, trata-se de um Learning Environment do qual o utilizador pode colocar À sua maneira para cumprir com as suas necessidades.
+
+    Perguntas
+        RNF1- Escalabilidade moderada (permissão de plugins)
+        RNF2- Privacidade (local storage)
+
+        RF1- Criação de área de estudos personalizada
+        RF2- Importar conteúdos
+        RF3- Registar tempo e qualidade de estudo
+        RF4- Registar hábitos de aprendizagem.
+        RF5- Gerar visualização de progresso
+        RF6- OLM visivel e simples
+        RF7- Diário
+        RF8- Métricas de motivação, regularidade e consistencia
+
+Linguagem= Tauri
+Arquitetura= ?
