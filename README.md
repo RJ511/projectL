@@ -1,7 +1,22 @@
-# Tauri + React
+# Project L
 
-This template should help get you started developing with Tauri and React in Vite.
+The propose of this project is to develop a software that has **all the necessary tools for autodidacts** or some who really wants to learn with all the available resources online.
 
-## Recommended IDE Setup
+## Tools to implement:
+    - Note Library (Second Brain type)
+    - Time tracker
+    - Calendar
+    - Concentration assistant
+    - Emotion Tracker
+    - OML
+    - Flashcards
+    - Motivation booster
 
-- [VS Code](https://code.visualstudio.com/) + [Tauri](https://marketplace.visualstudio.com/items?itemName=tauri-apps.tauri-vscode) + [rust-analyzer](https://marketplace.visualstudio.com/items?itemName=rust-lang.rust-analyzer)
+## Structure wise
+    - Anki compatability
+    - Plugin-wise
+
+
+## Software utilizado
+    -Tauri
+    - MirrorCode 6

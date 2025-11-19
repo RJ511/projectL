@@ -1,0 +1,114 @@
+/* esconder marcadores markdown (asteriscos, chaves, etc) */
+.cm-md-hide {
+  color: transparent !important;
+  font-size: 0 !important;
+}
+
+/* inline styles */
+.cm-md-bold {
+  font-weight: bold;
+}
+
+.cm-md-italic {
+  font-style: italic;
+}
+
+.cm-md-bolditalic {
+  font-weight: bold;
+  font-style: italic;
+}
+
+.cm-md-strike {
+  text-decoration: line-through;
+}
+
+.cm-md-code {
+  font-family: monospace;
+  background: rgba(0, 0, 0, 0.05);
+  padding: 0 3px;
+  border-radius: 3px;
+}
+
+/* links */
+.cm-md-link {
+  color: #1e88e5;
+  text-decoration: underline;
+}
+
+/* wikilinks tipo Obsidian */
+.cm-md-wikilink {
+  color: #9c27b0;
+  text-decoration: underline;
+}
+
+/* imagens (mostramos só o alt como "tag") */
+.cm-md-image {
+  font-style: italic;
+  color: #6d4c41;
+}
+
+/* headings */
+.cm-md-h1 {
+  font-weight: bold;
+  font-size: 1.8em;
+}
+
+.cm-md-h2 {
+  font-weight: bold;
+  font-size: 1.6em;
+}
+
+.cm-md-h3 {
+  font-weight: bold;
+  font-size: 1.4em;
+}
+
+.cm-md-h4 {
+  font-weight: 600;
+  font-size: 1.2em;
+}
+
+.cm-md-h5 {
+  font-weight: 600;
+  font-size: 1.1em;
+}
+
+.cm-md-h6 {
+  font-weight: 500;
+  font-size: 1.0em;
+  opacity: 0.9;
+}
+
+/* blockquotes */
+.cm-md-blockquote {
+  border-left: 3px solid rgba(0, 0, 0, 0.2);
+  padding-left: 8px;
+  margin-left: 4px;
+  color: rgba(0, 0, 0, 0.8);
+  font-style: italic;
+}
+
+.cm-md-hr {
+  position: relative;
+  color: transparent !important;
+  font-size: 0 !important;
+  height: 1.2em;
+  display: block;
+}
+
+.cm-md-hr::before {
+  content: "";
+  position: absolute;
+  top: 50%;
+  left: 0;
+  right: 0;
+  height: 2px;
+  background: rgba(0, 0, 0, 0.25);
+}
+
+
+/* line break com 2 espaços */
+.cm-md-linebreak {
+  background: rgba(0, 0, 0, 0.06);
+  border-radius: 2px;
+}
