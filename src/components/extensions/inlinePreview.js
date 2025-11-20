@@ -1,6 +1,7 @@
 // src/extensions/inlinePreview.js
 import { ViewPlugin, Decoration } from "@codemirror/view";
 import { RangeSetBuilder } from "@codemirror/state";
+import { openFileEffect } from "../../components/editor/effects/openFileEffect";
 
 export function inlinePreview() {
   return ViewPlugin.fromClass(
@@ -10,7 +11,11 @@ export function inlinePreview() {
       }
 
       update(update) {
-        if (update.docChanged || update.selectionSet || update.viewportChanged) {
+        if (
+          update.docChanged ||
+          update.selectionSet ||
+          update.viewportChanged
+        ) {
           this.decorations = this.buildDeco(update.view);
         }
       }
@@ -24,9 +29,9 @@ export function inlinePreview() {
           const text = state.doc.sliceString(from, to);
 
           //
-          // 1) INLINE STYLES: bold / italic / strike / bold+italic
+          // 1) INLINE STYLES: bold / italic / bold+italic / strike
           //
-          // *it*, _it_, **bold**, __bold__, ***bolditalic***, ~~strike~~
+          // *it*, _it_, **bold**, __bold__, ***both***, ~~strike~~
           const inlineRe = /(\*\*\*|\*\*|\*|__|_|~~)([^*_~\n]+?)\1/g;
           let m;
 
@@ -39,8 +44,7 @@ export function inlinePreview() {
             const innerEnd = innerStart + inner.length;
             const end = innerEnd + marker.length;
 
-            const cursorInside =
-              cursor >= innerStart && cursor <= innerEnd;
+            const cursorInside = cursor >= innerStart && cursor <= innerEnd;
             if (cursorInside) continue;
 
             let cls = "";
@@ -49,11 +53,8 @@ export function inlinePreview() {
             else if (marker === "***") cls = "cm-md-bolditalic";
             else if (marker === "~~") cls = "cm-md-strike";
 
-            // esconder marcadores
             deco.push({ from: start, to: innerStart, cls: "cm-md-hide" });
             deco.push({ from: innerEnd, to: end, cls: "cm-md-hide" });
-
-            // aplicar estilo ao texto interno
             deco.push({ from: innerStart, to: innerEnd, cls });
           }
 
@@ -68,8 +69,7 @@ export function inlinePreview() {
             const innerEnd = innerStart + inner.length;
             const end = innerEnd + 1;
 
-            const cursorInside =
-              cursor >= innerStart && cursor <= innerEnd;
+            const cursorInside = cursor >= innerStart && cursor <= innerEnd;
             if (cursorInside) continue;
 
             deco.push({ from: start, to: innerStart, cls: "cm-md-hide" });
@@ -78,7 +78,7 @@ export function inlinePreview() {
           }
 
           //
-          // 3) WIKILINKS: [[ficheiro]]
+          // 3) WIKILINKS: [[Nome do ficheiro]]
           //
           const wikiRe = /\[\[([^[\]\n]+)\]\]/g;
           while ((m = wikiRe.exec(text))) {
@@ -88,13 +88,16 @@ export function inlinePreview() {
             const innerEnd = innerStart + inner.length;
             const end = innerEnd + 2;
 
-            const cursorInside =
-              cursor >= innerStart && cursor <= innerEnd;
+            const cursorInside = cursor >= innerStart && cursor <= innerEnd;
             if (cursorInside) continue;
 
             deco.push({ from: start, to: innerStart, cls: "cm-md-hide" });
             deco.push({ from: innerEnd, to: end, cls: "cm-md-hide" });
-            deco.push({ from: innerStart, to: innerEnd, cls: "cm-md-wikilink" });
+            deco.push({
+              from: innerStart,
+              to: innerEnd,
+              cls: "cm-md-wikilink",
+            });
           }
 
           //
@@ -112,14 +115,14 @@ export function inlinePreview() {
             const urlEnd = urlStart + url.length;
             const end = urlEnd + 1; // ")"
 
-            const cursorInside =
+            const cursorInsideLabel =
               cursor >= labelStart && cursor <= labelEnd;
-            if (cursorInside) continue;
+            const cursorInsideUrl = cursor >= urlStart && cursor <= urlEnd;
 
-            // esconder '[' e '](url)'
+            if (cursorInsideLabel || cursorInsideUrl) continue;
+
             deco.push({ from: start, to: labelStart, cls: "cm-md-hide" });
             deco.push({ from: labelEnd, to: end, cls: "cm-md-hide" });
-
             deco.push({ from: labelStart, to: labelEnd, cls: "cm-md-link" });
           }
 
@@ -136,8 +139,7 @@ export function inlinePreview() {
             const innerEnd = innerStart + url.length;
             const end = innerEnd + 1;
 
-            const cursorInside =
-              cursor >= innerStart && cursor <= innerEnd;
+            const cursorInside = cursor >= innerStart && cursor <= innerEnd;
             if (cursorInside) continue;
 
             deco.push({ from: start, to: innerStart, cls: "cm-md-hide" });
@@ -156,62 +158,131 @@ export function inlinePreview() {
             const start = from + m.index;
             const altStart = start + 2; // ![
             const altEnd = altStart + alt.length;
-
             const srcStart = altEnd + 2; // ](
             const srcEnd = srcStart + src.length;
             const end = srcEnd + 1; // )
 
-            // Cursor dentro do ALT: mostrar markdown literal completo
-            const cursorInsideAlt =
-              cursor >= altStart && cursor <= altEnd;
-            if (cursorInsideAlt) continue;
+            const cursorInsideAlt = cursor >= altStart && cursor <= altEnd;
+            const cursorInsideSrc = cursor >= srcStart && cursor <= srcEnd;
 
-            // Cursor dentro do SRC (link da imagem): mostrar literal
-            const cursorInsideSrc =
-              cursor >= srcStart && cursor <= srcEnd;
-            if (cursorInsideSrc) continue;
+            // se estiver a editar alt ou src, mostra literal
+            if (cursorInsideAlt || cursorInsideSrc) continue;
 
             // esconder ![
             deco.push({ from: start, to: altStart, cls: "cm-md-hide" });
-            
             // esconder ](
             deco.push({ from: altEnd, to: srcStart, cls: "cm-md-hide" });
-            
-            // esconder o último ')'
+            // esconder ')'
             deco.push({ from: srcEnd, to: end, cls: "cm-md-hide" });
 
-            // mostrar ALT
+            // alt com estilo de imagem
             deco.push({ from: altStart, to: altEnd, cls: "cm-md-image" });
-
-            // mostrar SRC esmaecido (não invisível)
+            // src esbatido mas editável quando entras
             deco.push({ from: srcStart, to: srcEnd, cls: "cm-md-url" });
           }
 
-
           //
-          // 7) HR e HEADINGS + BLOCKQUOTES + linebreak (2 espaços)
+          // 7) POR-LINHA: headings, blockquotes, listas, checkboxes, tabelas, hr, linebreak
           //
           const lines = text.split("\n");
           let offset = from;
 
           for (const line of lines) {
             const raw = line;
-            const trimmed = raw.trimEnd();
+            const trimmedEnd = raw.trimEnd();
             const indent = raw.length - raw.trimStart().length;
 
             const lineStart = offset;
             const lineEnd = offset + raw.length;
-
             const content = raw.trimStart();
+
+            // FOOTNOTE DEFINITIONS FIRST
+            const footnoteDefRegex = /^\s*\[\^([^\]\n]+)\]:/;
+            const defMatch = footnoteDefRegex.exec(raw);
+
+            if (defMatch) {
+              const label = defMatch[1];
+
+              const fullStart = lineStart + raw.indexOf("[");
+              const hatPos = lineStart + raw.indexOf("^");
+              const innerEnd = lineStart + label.length;
+              const end = innerEnd + 1; // "]"
+              const fullEnd = lineEnd;
+
+              // número [1]
+              const numStart = fullStart + 1;
+              const numEnd = numStart + label.length;
+
+              // esconder "[^"
+              deco.push({
+                from: fullStart,
+                to: hatPos + 1,
+                cls: "cm-md-hide",
+              });
+
+              // esconder após o número "]"
+              deco.push({
+                from: numEnd + 1,
+                to: numEnd + 2,
+                cls: "cm-md-hide",
+              });
+
+              deco.push({
+                from: numStart,
+                to: numEnd,
+                cls: "cm-md-footdef-number",
+              });
+
+              // linha inteira
+              deco.push({
+                from: fullStart,
+                to: fullEnd,
+                cls: "cm-md-footdef",
+              });
+
+              offset += raw.length + 1;
+              continue; // IMPORTANTÍSSIMO
+            }
+
+            // INLINE FOOTNOTE REFERENCES
+            const footnoteRefRegex = /\[\^([^\]\n]+)\]/g;
+            let mRef;
+
+            while ((mRef = footnoteRefRegex.exec(raw))) {
+              const label = mRef[1];
+
+              const start = lineStart + mRef.index;
+              const hatPos = start + 1;
+              const end = start + mRef[0].length;
+
+              // cursor dentro = mostrar literal
+              if (cursor >= start && cursor <= end) continue;
+
+              // esconder "^"
+              deco.push({
+                from: hatPos,
+                to: hatPos + 1,
+                cls: "cm-md-hide",
+              });
+
+              // aplicar estilo a TODO o [1]
+              deco.push({
+                from: start,
+                to: end,
+                cls: "cm-md-footref",
+              });
+            }
 
             // HR: --- ___ ***
             if (
-              /^(\*\s*\*\s*\*|-+\s*-+\s*-+|_+\s*_+\s*_+)$/.test(trimmed.trim())
+              /^(\*\s*\*\s*\*|-+\s*-+\s*-+|_+\s*_+\s*_+)$/.test(
+                trimmedEnd.trim()
+              )
             ) {
               deco.push({ from: lineStart, to: lineEnd, cls: "cm-md-hr" });
             }
 
-            // HEADINGS # .. ######
+            // HEADINGS 1-6
             const hMatch = /^(#{1,6})\s+/.exec(content);
             if (hMatch) {
               const hashes = hMatch[1];
@@ -233,35 +304,107 @@ export function inlinePreview() {
             const bqMatch = /^(\s*>+)\s*/.exec(raw);
             if (bqMatch) {
               const markers = bqMatch[1];
-              const start = lineStart + raw.indexOf(">");
+              const firstGtIndex = raw.indexOf(">");
+              const startGt = lineStart + firstGtIndex;
 
-              // estilizar linha toda como blockquote
-              deco.push({ from: lineStart, to: lineEnd, cls: "cm-md-blockquote" });
+              deco.push({
+                from: lineStart,
+                to: lineEnd,
+                cls: "cm-md-blockquote",
+              });
 
-              // esconder todos os '>' (inclusive nested)
+              // esconder '>' múltiplos
               for (let i = 0; i < markers.length; i++) {
-                const pos = lineStart + raw.indexOf(">") + i;
+                const pos = startGt + i;
                 deco.push({ from: pos, to: pos + 1, cls: "cm-md-hide" });
               }
             }
 
-            // line break com 2 espaços no fim
+            // LISTAS E CHECKBOXES
+
+            // CHECKBOXES: - [ ] item, - [x] item
+            const cbMatch = /^(\s*)([-+*])\s+\[( |x|X)\]\s+(\S.*)$/.exec(raw);
+
+            if (cbMatch) {
+              const indent = cbMatch[1].length;
+              const bulletPos = lineStart + indent;
+              const boxStart = bulletPos + 2; // "- " is 2 chars
+
+              // esconder [ ] ou [x]
+              deco.push({
+                from: boxStart,
+                to: boxStart + 3,
+                cls: "cm-md-hide",
+              });
+
+              // desenhar caixa:
+              deco.push({
+                from: boxStart,
+                to: boxStart + 3,
+                cls:
+                  cbMatch[3].toLowerCase() === "x"
+                    ? "cm-md-checkbox-checked"
+                    : "cm-md-checkbox",
+              });
+
+              // também esconder o marcador "-" e mostrá-lo como bullet:
+              deco.push({
+                from: bulletPos,
+                to: bulletPos + 1,
+                cls: "cm-md-hide",
+              });
+
+              offset += raw.length + 1;
+              continue;
+            }
+
+            // - item, * item, + item
+            const listMatch = /^(\s*)([-+*])\s+(?!\[)(\S.*)$/.exec(raw);
+            if (listMatch) {
+              const leadingSpaces = listMatch[1].length;
+              const markerPos = lineStart + leadingSpaces;
+              const markerEnd = markerPos + 1;
+
+              // bullet (marcador)
+              deco.push({
+                from: markerPos,
+                to: markerEnd,
+                cls: "cm-md-bullet",
+              });
+            }
+
+            // TABELAS (linha com | ... |)
+            const isTableRow =
+              /\|/.test(raw) && !/^\s*```/.test(raw) && !/^\s*#/.test(raw);
+            if (isTableRow) {
+              deco.push({
+                from: lineStart,
+                to: lineEnd,
+                cls: "cm-md-table-row",
+              });
+            }
+
+            // line break com 2+ espaços no fim
             const twoSpacesRe = /(\s{2,})$/;
-            const lbMatch = twoSpacesRe.exec(trimmed);
-            if (lbMatch && trimmed.length > 0) {
+            const lbMatch = twoSpacesRe.exec(trimmedEnd);
+            if (lbMatch && trimmedEnd.length > 0) {
               const spaces = lbMatch[1];
               const spacesLen = spaces.length;
               const spacesStart = lineEnd - spacesLen;
               const spacesEnd = lineEnd;
-              deco.push({ from: spacesStart, to: spacesEnd, cls: "cm-md-linebreak" });
+              deco.push({
+                from: spacesStart,
+                to: spacesEnd,
+                cls: "cm-md-linebreak",
+              });
             }
 
             offset += raw.length + 1;
           }
         }
 
-        // Ordenar SEMPRE antes de aplicar
-        deco.sort((a, b) => a.from - b.from);
+        // Ordenar SEMPRE antes de aplicar (evita erro de ranges)
+        deco.sort((a, b) => a.from - b.from || a.to - b.to);
 
         const builder = new RangeSetBuilder();
         for (const d of deco) {
@@ -273,6 +416,35 @@ export function inlinePreview() {
     },
     {
       decorations: (v) => v.decorations,
+      eventHandlers: {
+        click: (e, view) => {
+          if (!e.ctrlKey) return;
+
+          let el = e.target;
+          if (!(el instanceof HTMLElement)) return;
+
+          // SUBIR A ARVORE DOM ATÉ ENCONTRAR .cm-md-wikilink
+          const linkEl = el.closest(".cm-md-wikilink");
+          if (!linkEl) return;
+
+          console.log("CTRL+CLICK wikilink");
+
+          // obter posição do CM a partir do elemento
+          const pos = view.posAtDOM(linkEl);
+          if (!pos) return;
+
+          const raw = view.state.doc.sliceString(pos.from, pos.to).trim();
+
+          // limpar [[ ]]
+          const clean = raw.replace(/^\[\[/, "").replace(/\]\]$/, "");
+
+          view.dispatch({
+            effects: openFileEffect.of(clean),
+          });
+        },
+      },
+
+
     }
   );
 }

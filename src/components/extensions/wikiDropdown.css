@@ -1,0 +1,17 @@
+.wiki-dropdown {
+  background: white;
+  border: 1px solid #ccc;
+  border-radius: 6px;
+  padding: 4px 0;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+  font-size: 14px;
+}
+
+.wiki-dropdown-item {
+  padding: 6px 10px;
+  cursor: pointer;
+}
+
+.wiki-dropdown-item:hover {
+  background: #eee;
+}

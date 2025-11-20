@@ -4,8 +4,6 @@ import EditorContainer from "../components/editor/EditorContainer";
 import { useFileSystem } from "../hooks/useFileSystem";
 import { open } from "@tauri-apps/plugin-dialog";
 
-
-
 export default function Main() {
   const [rootPath, setRootPath] = useState("");
   useEffect(() => {
@@ -30,20 +28,20 @@ export default function Main() {
   } = useFileSystem(rootPath);
 
   useEffect(() => {
-    if (rootPath) loadTree();
+    if (rootPath) {loadTree();}
   }, [rootPath]);
 
   async function chooseDirectory() {
     const folder = await open({
-        directory: true,
-        multiple: false,
+      directory: true,
+      multiple: false,
     });
 
     if (folder) {
-        setRootPath(folder);
-        localStorage.setItem("lastRootPath", folder);
+      setRootPath(folder);
+      localStorage.setItem("lastRootPath", folder);
     }
-    }
+  }
 
   return (
     <div style={{ display: "flex", height: "100vh" }}>
@@ -64,6 +62,8 @@ export default function Main() {
         isDirty={isDirty}
         saveFile={saveFile}
         renameFile={renameSelected}
+        tree={tree}
+        openFile={openFile}
       />
     </div>
   );

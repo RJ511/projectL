@@ -1,4 +1,3 @@
-/* esconder marcadores markdown (asteriscos, chaves, etc) */
 .cm-md-hide {
   color: transparent !important;
   font-size: 0 !important;
@@ -24,7 +23,7 @@
 
 .cm-md-code {
   font-family: monospace;
-  background: rgba(0, 0, 0, 0.05);
+  background: rgba(0, 0, 0, 0.06);
   padding: 0 3px;
   border-radius: 3px;
 }
@@ -41,10 +40,16 @@
   text-decoration: underline;
 }
 
-/* imagens (mostramos só o alt como "tag") */
+/* imagens */
 .cm-md-image {
   font-style: italic;
   color: #6d4c41;
+}
+
+.cm-md-url {
+  opacity: 0.4;
+  font-size: 0.9em;
+  font-family: monospace;
 }
 
 /* headings */
@@ -75,7 +80,7 @@
 
 .cm-md-h6 {
   font-weight: 500;
-  font-size: 1.0em;
+  font-size: 1em;
   opacity: 0.9;
 }
 
@@ -84,10 +89,11 @@
   border-left: 3px solid rgba(0, 0, 0, 0.2);
   padding-left: 8px;
   margin-left: 4px;
-  color: rgba(0, 0, 0, 0.8);
+  color: rgba(0, 0, 0, 0.85);
   font-style: italic;
 }
 
+/* horizontal rules — linha completa */
 .cm-md-hr {
   position: relative;
   color: transparent !important;
@@ -106,9 +112,102 @@
   background: rgba(0, 0, 0, 0.25);
 }
 
-
-/* line break com 2 espaços */
+/* line break com 2+ espaços */
 .cm-md-linebreak {
   background: rgba(0, 0, 0, 0.06);
   border-radius: 2px;
+}
+
+/* listas */
+.cm-md-bullet {
+  color: transparent !important;
+  position: relative;
+}
+
+.cm-md-bullet::before {
+  content: "•";
+  position: relative;
+  left: 0;
+  color: rgba(0, 0, 0, 0.8);
+}
+
+/* checkboxes */
+.cm-md-checkbox,
+.cm-md-checkbox-checked {
+  position: relative;
+}
+
+.cm-md-checkbox::before,
+.cm-md-checkbox-checked::before {
+  content: "";
+  display: inline-block;
+  width: 0.9em;
+  height: 0.9em;
+  border-radius: 3px;
+  border: 1px solid rgba(0, 0, 0, 0.6);
+  margin-right: 4px;
+  vertical-align: middle;
+}
+
+.cm-md-checkbox-checked::before {
+  background: rgba(0, 0, 0, 0.8);
+}
+
+/* tabelas */
+.cm-md-table-row {
+  font-family: monospace;
+  background: rgba(0, 0, 0, 0.02);
+  border-bottom: 1px solid rgba(0, 0, 0, 0.08);
+}
+
+/* footnotes inline [1] */
+.cm-md-footref {
+  font-size: 0.8em;
+  font-weight: bold;
+  color: #9c27b0;
+  vertical-align: super;
+}
+
+/* número na definição [1]: */
+.cm-md-footdef-number {
+  font-size: 1em;
+  font-weight: bold;
+  color: #444;
+}
+
+/* linha de definição [1]: texto */
+.cm-md-footdef {
+  font-size: 1em;
+  opacity: 1;
+  font-style: normal;
+  color: #444;
+}
+
+.cm-tooltip.cm-tooltip-autocomplete {
+  position: absolute;
+  background: #fff;
+  border: 1px solid #ccc;
+  box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+  z-index: 9999;
+  font-size: 0.9rem;
+}
+
+.cm-tooltip.cm-tooltip-autocomplete ul {
+  list-style: none;
+  margin: 0;
+  padding: 4px 0;
+}
+
+.cm-tooltip.cm-tooltip-autocomplete li {
+  padding: 2px 8px;
+  cursor: pointer;
+}
+
+.cm-tooltip.cm-tooltip-autocomplete li[aria-selected="true"] {
+  background: #eee;
+}
+
+/* se o container do editor estiver a cortar a tooltip */
+.cm-editor {
+  overflow: visible;
 }
