@@ -2,3 +2,6 @@ build/
 src/generated/*.rs
 deny.toml
 .vscode
+*storybook.log
+storybook-static
+node_modules

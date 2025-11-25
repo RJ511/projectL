@@ -7,7 +7,9 @@
     "dev": "vite",
     "build": "vite build",
     "preview": "vite preview",
-    "tauri": "tauri"
+    "tauri": "tauri",
+    "storybook": "storybook dev -p 6006",
+    "build-storybook": "storybook build"
   },
   "dependencies": {
     "@codemirror/autocomplete": "^6.19.1",
@@ -18,6 +20,7 @@
     "@codemirror/state": "^6.5.2",
     "@codemirror/view": "^6.38.8",
     "@floating-ui/dom": "^1.7.4",
+    "@material/web": "^2.4.1",
     "@tauri-apps/api": "^2",
     "@tauri-apps/plugin-dialog": "^2.4.2",
     "@tauri-apps/plugin-fs": "^2.4.4",
@@ -26,6 +29,7 @@
     "@tiptap/pm": "^3.10.7",
     "@tiptap/react": "^3.10.7",
     "@tiptap/starter-kit": "^3.10.7",
+    "lucide-react": "^0.554.0",
     "markdown-it": "^14.1.0",
     "react": "^19.1.0",
     "react-dom": "^19.1.0",
@@ -33,8 +37,20 @@
     "remark-gfm": "^4.0.1"
   },
   "devDependencies": {
+    "@chromatic-com/storybook": "^4.1.3",
+    "@storybook/addon-a11y": "^10.0.8",
+    "@storybook/addon-docs": "^10.0.8",
+    "@storybook/addon-onboarding": "^10.0.8",
+    "@storybook/addon-vitest": "^10.0.8",
+    "@storybook/react-vite": "^10.0.8",
     "@tauri-apps/cli": "^2",
     "@vitejs/plugin-react": "^4.6.0",
-    "vite": "^7.0.4"
+    "@vitest/browser-playwright": "^4.0.12",
+    "@vitest/coverage-v8": "^4.0.12",
+    "playwright": "^1.56.1",
+    "prop-types": "^15.8.1",
+    "storybook": "^10.0.8",
+    "vite": "^7.0.4",
+    "vitest": "^4.0.12"
   }
 }

@@ -1,6 +1,7 @@
 import { useState, useEffect } from "react";
 import Sidebar from "../components/layout/Sidebar";
 import EditorContainer from "../components/editor/EditorContainer";
+import ToolBar from "../components/editor/ToolBar";
 import { useFileSystem } from "../hooks/useFileSystem";
 import { open } from "@tauri-apps/plugin-dialog";
 
@@ -45,6 +46,7 @@ export default function Main() {
 
   return (
     <div style={{ display: "flex", height: "100vh" }}>
+      <ToolBar/>
       <Sidebar
         tree={tree}
         chooseDirectory={chooseDirectory}
