@@ -4,13 +4,25 @@ mod commands;
 
 fn main() {
     tauri::Builder::default()
+        .manage(commands::OlmState::default())
         .plugin(tauri_plugin_dialog::init())
         .invoke_handler(tauri::generate_handler![
             commands::get_tree,
             commands::read_file,
             commands::write_file,
+            commands::create_folder,
             commands::create_file,
-            commands::rename_file
+            commands::rename_file,
+            commands::olm_upsert_concept,
+            commands::olm_list_concepts,
+            commands::olm_add_edge,
+            commands::olm_list_edges,
+            commands::olm_upsert_content_item,
+            commands::olm_map_content_concept,
+            commands::olm_ingest_event,
+            commands::olm_get_state,
+            commands::olm_get_explain,
+            commands::olm_next_to_study
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

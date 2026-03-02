@@ -1,0 +1,1529 @@
+{
+  "generated_at": "simulated",
+  "scenarios_count": 6,
+  "approaches": [
+    {
+      "approach_id": "baseline",
+      "approach_name": "Baseline",
+      "description": "Sem uso metacognitivo (meta_strength=0)",
+      "pass_rate": 0.8333333333333334,
+      "hit_at_3_rate": 1.0,
+      "avg_mrr": 0.9166666666666666,
+      "avg_ndcg_at_3": 0.9384882922619097,
+      "train_pass_rate": 0.6666666666666666,
+      "test_pass_rate": 1.0,
+      "train_avg_mrr": 0.8333333333333334,
+      "test_avg_mrr": 1.0,
+      "scenarios": [
+        {
+          "scenario_id": "S1",
+          "scenario_name": "Progressão linear",
+          "expected_any": [
+            "foundation",
+            "domain_core"
+          ],
+          "top_recommendation": "advanced_problem",
+          "top_recommendations": [
+            "advanced_problem",
+            "domain_core",
+            "foundation"
+          ],
+          "rank_of_first_expected": 2,
+          "pass": false,
+          "hit_at_3": true,
+          "mrr": 0.5,
+          "ndcg_at_3": 0.6309297535714575,
+          "avg_mastery": 0.5974826224262505,
+          "avg_uncertainty": 0.32960071090708287,
+          "diagnostics": {
+            "candidates_before_gate": 3,
+            "candidates_after_gate": 3,
+            "candidates_ranked": 3,
+            "candidates_excluded_min_readiness": 0,
+            "readiness_distribution": [
+              1.0,
+              0.6156583629893239,
+              0.5768025078369906
+            ],
+            "concept_event_counts": {
+              "domain_core": 2,
+              "foundation": 2,
+              "advanced_problem": 1
+            },
+            "top_candidates": [
+              {
+                "concept_id": "advanced_problem",
+                "name": "Advanced Problem",
+                "score": 0.5207386363636364,
+                "readiness": 0.5768025078369906,
+                "mastery": 0.390625,
+                "uncertainty": 0.390625,
+                "why": [
+                  "Mastery baixo/moderado (0.39)",
+                  "Readiness pelos pré-requisitos (0.58)",
+                  "Incerteza elevada (0.39) por evidência limitada"
+                ]
+              },
+              {
+                "concept_id": "domain_core",
+                "name": "Domain Core",
+                "score": 0.30143129664543333,
+                "readiness": 0.6156583629893239,
+                "mastery": 0.6865203761755486,
+                "uncertainty": 0.31347962382445144,
+                "why": [
+                  "Mastery baixo/moderado (0.69)",
+                  "Readiness pelos pré-requisitos (0.62)",
+                  "Incerteza elevada (0.31) por evidência limitada"
+                ]
+              },
+              {
+                "concept_id": "foundation",
+                "name": "Foundation",
+                "score": 0.2505338078291815,
+                "readiness": 1.0,
+                "mastery": 0.7153024911032029,
+                "uncertainty": 0.2846975088967972,
+                "why": [
+                  "Mastery baixo/moderado (0.72)",
+                  "Readiness pelos pré-requisitos (1.00)",
+                  "Conceito raiz com penalização suave (0.12)",
+                  "Incerteza controlada (0.28)"
+                ]
+              }
+            ]
+          },
+          "notes": "approach=baseline, lambda=0.70, threshold=0.50, min_readiness=0.10, readiness_gamma=0.35, root_penalty=0.12, meta_strength=0.00, soft_gate_k=1.60"
+        },
+        {
+          "scenario_id": "S2",
+          "scenario_name": "Pré-requisito bloqueado",
+          "expected_any": [
+            "foundation"
+          ],
+          "top_recommendation": "foundation",
+          "top_recommendations": [
+            "foundation",
+            "advanced_problem",
+            "domain_core"
+          ],
+          "rank_of_first_expected": 1,
+          "pass": true,
+          "hit_at_3": true,
+          "mrr": 1.0,
+          "ndcg_at_3": 1.0,
+          "avg_mastery": 0.4637946137489488,
+          "avg_uncertainty": 0.39267039218224936,
+          "diagnostics": {
+            "candidates_before_gate": 3,
+            "candidates_after_gate": 1,
+            "candidates_ranked": 3,
+            "candidates_excluded_min_readiness": 0,
+            "readiness_distribution": [
+              0.325,
+              1.0,
+              0.18505338078291816
+            ],
+            "concept_event_counts": {
+              "advanced_problem": 1,
+              "foundation": 2,
+              "domain_core": 0
+            },
+            "top_candidates": [
+              {
+                "concept_id": "foundation",
+                "name": "Foundation",
+                "score": 0.5157864768683275,
+                "readiness": 1.0,
+                "mastery": 0.2846975088967972,
+                "uncertainty": 0.2846975088967972,
+                "why": [
+                  "Mastery baixo/moderado (0.28)",
+                  "Readiness pelos pré-requisitos (1.00)",
+                  "Conceito raiz com penalização suave (0.12)",
+                  "Incerteza controlada (0.28)"
+                ]
+              },
+              {
+                "concept_id": "advanced_problem",
+                "name": "Advanced Problem",
+                "score": 0.18409807590555358,
+                "readiness": 0.325,
+                "mastery": 0.6066863323500492,
+                "uncertainty": 0.39331366764995085,
+                "why": [
+                  "Mastery baixo/moderado (0.61)",
+                  "Readiness pelos pré-requisitos (0.33)",
+                  "Abaixo do limiar (0.50), mantido por soft-gating (k=1.60)",
+                  "Incerteza elevada (0.39) por evidência limitada"
+                ]
+              },
+              {
+                "concept_id": "domain_core",
+                "name": "Domain Core",
+                "score": 0.09362135446962683,
+                "readiness": 0.18505338078291816,
+                "mastery": 0.5,
+                "uncertainty": 0.5,
+                "why": [
+                  "Mastery baixo/moderado (0.50)",
+                  "Readiness pelos pré-requisitos (0.19)",
+                  "Abaixo do limiar (0.50), mantido por soft-gating (k=1.60)",
+                  "Incerteza elevada (0.50) por evidência limitada"
+                ]
+              }
+            ]
+          },
+          "notes": "approach=baseline, lambda=0.70, threshold=0.50, min_readiness=0.10, readiness_gamma=0.35, root_penalty=0.12, meta_strength=0.00, soft_gate_k=1.60"
+        },
+        {
+          "scenario_id": "S3",
+          "scenario_name": "Erros repetidos no core",
+          "expected_any": [
+            "domain_core",
+            "foundation"
+          ],
+          "top_recommendation": "domain_core",
+          "top_recommendations": [
+            "domain_core",
+            "foundation",
+            "advanced_problem"
+          ],
+          "rank_of_first_expected": 1,
+          "pass": true,
+          "hit_at_3": true,
+          "mrr": 1.0,
+          "ndcg_at_3": 1.0,
+          "avg_mastery": 0.4493607884669919,
+          "avg_uncertainty": 0.3695128797217448,
+          "diagnostics": {
+            "candidates_before_gate": 3,
+            "candidates_after_gate": 1,
+            "candidates_ranked": 3,
+            "candidates_excluded_min_readiness": 0,
+            "readiness_distribution": [
+              1.0,
+              0.4866920152091254,
+              0.14840182648401828
+            ],
+            "concept_event_counts": {
+              "advanced_problem": 0,
+              "foundation": 1,
+              "domain_core": 4
+            },
+            "top_candidates": [
+              {
+                "concept_id": "domain_core",
+                "name": "Domain Core",
+                "score": 0.5530387763505663,
+                "readiness": 0.4866920152091254,
+                "mastery": 0.22831050228310504,
+                "uncertainty": 0.22831050228310504,
+                "why": [
+                  "Mastery baixo/moderado (0.23)",
+                  "Readiness pelos pré-requisitos (0.49)",
+                  "Abaixo do limiar (0.50), mantido por soft-gating (k=1.60)",
+                  "Incerteza controlada (0.23)"
+                ]
+              },
+              {
+                "concept_id": "foundation",
+                "name": "Foundation",
+                "score": 0.3346007604562738,
+                "readiness": 1.0,
+                "mastery": 0.6197718631178707,
+                "uncertainty": 0.3802281368821293,
+                "why": [
+                  "Mastery baixo/moderado (0.62)",
+                  "Readiness pelos pré-requisitos (1.00)",
+                  "Conceito raiz com penalização suave (0.12)",
+                  "Incerteza elevada (0.38) por evidência limitada"
+                ]
+              },
+              {
+                "concept_id": "advanced_problem",
+                "name": "Advanced Problem",
+                "score": 0.06550372883598334,
+                "readiness": 0.14840182648401828,
+                "mastery": 0.5,
+                "uncertainty": 0.5,
+                "why": [
+                  "Mastery baixo/moderado (0.50)",
+                  "Readiness pelos pré-requisitos (0.15)",
+                  "Abaixo do limiar (0.50), mantido por soft-gating (k=1.60)",
+                  "Incerteza elevada (0.50) por evidência limitada"
+                ]
+              }
+            ]
+          },
+          "notes": "approach=baseline, lambda=0.70, threshold=0.50, min_readiness=0.10, readiness_gamma=0.35, root_penalty=0.12, meta_strength=0.00, soft_gate_k=1.60"
+        },
+        {
+          "scenario_id": "S4",
+          "scenario_name": "Incerteza alta",
+          "expected_any": [
+            "foundation"
+          ],
+          "top_recommendation": "foundation",
+          "top_recommendations": [
+            "foundation",
+            "advanced_problem",
+            "domain_core"
+          ],
+          "rank_of_first_expected": 1,
+          "pass": true,
+          "hit_at_3": true,
+          "mrr": 1.0,
+          "ndcg_at_3": 1.0,
+          "avg_mastery": 0.488581560283688,
+          "avg_uncertainty": 0.47517730496453897,
+          "diagnostics": {
+            "candidates_before_gate": 3,
+            "candidates_after_gate": 1,
+            "candidates_ranked": 3,
+            "candidates_excluded_min_readiness": 0,
+            "readiness_distribution": [
+              1.0,
+              0.325,
+              0.31680851063829785
+            ],
+            "concept_event_counts": {
+              "foundation": 2,
+              "domain_core": 0,
+              "advanced_problem": 0
+            },
+            "top_candidates": [
+              {
+                "concept_id": "foundation",
+                "name": "Foundation",
+                "score": 0.44144170212765954,
+                "readiness": 1.0,
+                "mastery": 0.4657446808510638,
+                "uncertainty": 0.425531914893617,
+                "why": [
+                  "Mastery baixo/moderado (0.47)",
+                  "Readiness pelos pré-requisitos (1.00)",
+                  "Conceito raiz com penalização suave (0.12)",
+                  "Incerteza elevada (0.43) por evidência limitada"
+                ]
+              },
+              {
+                "concept_id": "advanced_problem",
+                "name": "Advanced Problem",
+                "score": 0.234034678994935,
+                "readiness": 0.325,
+                "mastery": 0.5,
+                "uncertainty": 0.5,
+                "why": [
+                  "Mastery baixo/moderado (0.50)",
+                  "Readiness pelos pré-requisitos (0.33)",
+                  "Abaixo do limiar (0.50), mantido por soft-gating (k=1.60)",
+                  "Incerteza elevada (0.50) por evidência limitada"
+                ]
+              },
+              {
+                "concept_id": "domain_core",
+                "name": "Domain Core",
+                "score": 0.22447093243023422,
+                "readiness": 0.31680851063829785,
+                "mastery": 0.5,
+                "uncertainty": 0.5,
+                "why": [
+                  "Mastery baixo/moderado (0.50)",
+                  "Readiness pelos pré-requisitos (0.32)",
+                  "Abaixo do limiar (0.50), mantido por soft-gating (k=1.60)",
+                  "Incerteza elevada (0.50) por evidência limitada"
+                ]
+              }
+            ]
+          },
+          "notes": "approach=baseline, lambda=0.70, threshold=0.50, min_readiness=0.10, readiness_gamma=0.35, root_penalty=0.12, meta_strength=0.00, soft_gate_k=1.60"
+        },
+        {
+          "scenario_id": "S5",
+          "scenario_name": "Multi-fonte",
+          "expected_any": [
+            "foundation",
+            "domain_core",
+            "advanced_problem"
+          ],
+          "top_recommendation": "advanced_problem",
+          "top_recommendations": [
+            "advanced_problem",
+            "domain_core",
+            "foundation"
+          ],
+          "rank_of_first_expected": 1,
+          "pass": true,
+          "hit_at_3": true,
+          "mrr": 1.0,
+          "ndcg_at_3": 1.0,
+          "avg_mastery": 0.5966051947291122,
+          "avg_uncertainty": 0.3340878745778184,
+          "diagnostics": {
+            "candidates_before_gate": 3,
+            "candidates_after_gate": 3,
+            "candidates_ranked": 3,
+            "candidates_excluded_min_readiness": 0,
+            "readiness_distribution": [
+              0.6511627906976745,
+              1.0,
+              0.5304347826086957
+            ],
+            "concept_event_counts": {
+              "domain_core": 1,
+              "foundation": 3,
+              "advanced_problem": 1
+            },
+            "top_candidates": [
+              {
+                "concept_id": "advanced_problem",
+                "name": "Advanced Problem",
+                "score": 0.5161532501076195,
+                "readiness": 0.5304347826086957,
+                "mastery": 0.39603960396039606,
+                "uncertainty": 0.39603960396039606,
+                "why": [
+                  "Mastery baixo/moderado (0.40)",
+                  "Readiness pelos pré-requisitos (0.53)",
+                  "Incerteza elevada (0.40) por evidência limitada"
+                ]
+              },
+              {
+                "concept_id": "domain_core",
+                "name": "Domain Core",
+                "score": 0.3356926188068756,
+                "readiness": 0.6511627906976745,
+                "mastery": 0.6521739130434783,
+                "uncertainty": 0.34782608695652173,
+                "why": [
+                  "Mastery baixo/moderado (0.65)",
+                  "Readiness pelos pré-requisitos (0.65)",
+                  "Incerteza elevada (0.35) por evidência limitada"
+                ]
+              },
+              {
+                "concept_id": "foundation",
+                "name": "Foundation",
+                "score": 0.22739018087855295,
+                "readiness": 1.0,
+                "mastery": 0.7416020671834626,
+                "uncertainty": 0.25839793281653745,
+                "why": [
+                  "Mastery baixo/moderado (0.74)",
+                  "Readiness pelos pré-requisitos (1.00)",
+                  "Conceito raiz com penalização suave (0.12)",
+                  "Incerteza controlada (0.26)"
+                ]
+              }
+            ]
+          },
+          "notes": "approach=baseline, lambda=0.70, threshold=0.50, min_readiness=0.10, readiness_gamma=0.35, root_penalty=0.12, meta_strength=0.00, soft_gate_k=1.60"
+        },
+        {
+          "scenario_id": "S6",
+          "scenario_name": "Cobertura parcial",
+          "expected_any": [
+            "foundation",
+            "domain_core"
+          ],
+          "top_recommendation": "domain_core",
+          "top_recommendations": [
+            "domain_core",
+            "advanced_problem",
+            "foundation"
+          ],
+          "rank_of_first_expected": 1,
+          "pass": true,
+          "hit_at_3": true,
+          "mrr": 1.0,
+          "ndcg_at_3": 1.0,
+          "avg_mastery": 0.5585262403685222,
+          "avg_uncertainty": 0.38013078668811046,
+          "diagnostics": {
+            "candidates_before_gate": 3,
+            "candidates_after_gate": 2,
+            "candidates_ranked": 3,
+            "candidates_excluded_min_readiness": 0,
+            "readiness_distribution": [
+              1.0,
+              0.37232993756161675,
+              0.5791114575214341
+            ],
+            "concept_event_counts": {
+              "foundation": 2,
+              "advanced_problem": 0,
+              "domain_core": 3
+            },
+            "top_candidates": [
+              {
+                "concept_id": "domain_core",
+                "name": "Domain Core",
+                "score": 0.43819004761320535,
+                "readiness": 0.5791114575214341,
+                "mastery": 0.4873480118304304,
+                "uncertainty": 0.3286230693394676,
+                "why": [
+                  "Mastery baixo/moderado (0.49)",
+                  "Readiness pelos pré-requisitos (0.58)",
+                  "Incerteza elevada (0.33) por evidência limitada"
+                ]
+              },
+              {
+                "concept_id": "advanced_problem",
+                "name": "Advanced Problem",
+                "score": 0.29238177495124623,
+                "readiness": 0.37232993756161675,
+                "mastery": 0.5,
+                "uncertainty": 0.5,
+                "why": [
+                  "Mastery baixo/moderado (0.50)",
+                  "Readiness pelos pré-requisitos (0.37)",
+                  "Abaixo do limiar (0.50), mantido por soft-gating (k=1.60)",
+                  "Incerteza elevada (0.50) por evidência limitada"
+                ]
+              },
+              {
+                "concept_id": "foundation",
+                "name": "Foundation",
+                "score": 0.27435697583787994,
+                "readiness": 1.0,
+                "mastery": 0.6882307092751364,
+                "uncertainty": 0.31176929072486365,
+                "why": [
+                  "Mastery baixo/moderado (0.69)",
+                  "Readiness pelos pré-requisitos (1.00)",
+                  "Conceito raiz com penalização suave (0.12)",
+                  "Incerteza elevada (0.31) por evidência limitada"
+                ]
+              }
+            ]
+          },
+          "notes": "approach=baseline, lambda=0.70, threshold=0.50, min_readiness=0.10, readiness_gamma=0.35, root_penalty=0.12, meta_strength=0.00, soft_gate_k=1.60"
+        }
+      ]
+    },
+    {
+      "approach_id": "metacog_balanced",
+      "approach_name": "Metacognitive Balanced",
+      "description": "Ponderação metacognitiva moderada",
+      "pass_rate": 0.8333333333333334,
+      "hit_at_3_rate": 1.0,
+      "avg_mrr": 0.9166666666666666,
+      "avg_ndcg_at_3": 0.9384882922619097,
+      "train_pass_rate": 0.6666666666666666,
+      "test_pass_rate": 1.0,
+      "train_avg_mrr": 0.8333333333333334,
+      "test_avg_mrr": 1.0,
+      "scenarios": [
+        {
+          "scenario_id": "S1",
+          "scenario_name": "Progressão linear",
+          "expected_any": [
+            "foundation",
+            "domain_core"
+          ],
+          "top_recommendation": "advanced_problem",
+          "top_recommendations": [
+            "advanced_problem",
+            "domain_core",
+            "foundation"
+          ],
+          "rank_of_first_expected": 2,
+          "pass": false,
+          "hit_at_3": true,
+          "mrr": 0.5,
+          "ndcg_at_3": 0.6309297535714575,
+          "avg_mastery": 0.5931192844049397,
+          "avg_uncertainty": 0.34878693755915907,
+          "diagnostics": {
+            "candidates_before_gate": 3,
+            "candidates_after_gate": 3,
+            "candidates_ranked": 3,
+            "candidates_excluded_min_readiness": 0,
+            "readiness_distribution": [
+              1.0,
+              0.594693607872922,
+              0.5500793944897837
+            ],
+            "concept_event_counts": {
+              "advanced_problem": 1,
+              "domain_core": 2,
+              "foundation": 2
+            },
+            "top_candidates": [
+              {
+                "concept_id": "advanced_problem",
+                "name": "Advanced Problem",
+                "score": 0.5107919812786126,
+                "readiness": 0.5500793944897837,
+                "mastery": 0.4128593329461483,
+                "uncertainty": 0.4128593329461483,
+                "why": [
+                  "Mastery baixo/moderado (0.41)",
+                  "Readiness pelos pré-requisitos (0.55)",
+                  "Incerteza elevada (0.41) por evidência limitada"
+                ]
+              },
+              {
+                "concept_id": "domain_core",
+                "name": "Domain Core",
+                "score": 0.3197666931658657,
+                "readiness": 0.594693607872922,
+                "mastery": 0.6667254773998398,
+                "uncertainty": 0.3332745226001602,
+                "why": [
+                  "Mastery baixo/moderado (0.67)",
+                  "Readiness pelos pré-requisitos (0.59)",
+                  "Incerteza elevada (0.33) por evidência limitada"
+                ]
+              },
+              {
+                "concept_id": "foundation",
+                "name": "Foundation",
+                "score": 0.2641997222754286,
+                "readiness": 1.0,
+                "mastery": 0.6997730428688311,
+                "uncertainty": 0.30022695713116887,
+                "why": [
+                  "Mastery baixo/moderado (0.70)",
+                  "Readiness pelos pré-requisitos (1.00)",
+                  "Conceito raiz com penalização suave (0.12)",
+                  "Incerteza elevada (0.30) por evidência limitada"
+                ]
+              }
+            ]
+          },
+          "notes": "approach=metacog_balanced, lambda=0.70, threshold=0.50, min_readiness=0.10, readiness_gamma=0.35, root_penalty=0.12, meta_strength=0.60, soft_gate_k=1.60"
+        },
+        {
+          "scenario_id": "S2",
+          "scenario_name": "Pré-requisito bloqueado",
+          "expected_any": [
+            "foundation"
+          ],
+          "top_recommendation": "foundation",
+          "top_recommendations": [
+            "foundation",
+            "advanced_problem",
+            "domain_core"
+          ],
+          "rank_of_first_expected": 1,
+          "pass": true,
+          "hit_at_3": true,
+          "mrr": 1.0,
+          "ndcg_at_3": 1.0,
+          "avg_mastery": 0.46917352967940285,
+          "avg_uncertainty": 0.4107025197666621,
+          "diagnostics": {
+            "candidates_before_gate": 3,
+            "candidates_after_gate": 1,
+            "candidates_ranked": 3,
+            "candidates_excluded_min_readiness": 0,
+            "readiness_distribution": [
+              0.20787914820991327,
+              0.325,
+              1.0
+            ],
+            "concept_event_counts": {
+              "domain_core": 0,
+              "advanced_problem": 1,
+              "foundation": 2
+            },
+            "top_candidates": [
+              {
+                "concept_id": "foundation",
+                "name": "Foundation",
+                "score": 0.5034254458924777,
+                "readiness": 1.0,
+                "mastery": 0.31981407416909735,
+                "uncertainty": 0.31981407416909735,
+                "why": [
+                  "Mastery baixo/moderado (0.32)",
+                  "Readiness pelos pré-requisitos (1.00)",
+                  "Conceito raiz com penalização suave (0.12)",
+                  "Incerteza elevada (0.32) por evidência limitada"
+                ]
+              },
+              {
+                "concept_id": "advanced_problem",
+                "name": "Advanced Problem",
+                "score": 0.1929819468886212,
+                "readiness": 0.325,
+                "mastery": 0.5877065148691111,
+                "uncertainty": 0.41229348513088904,
+                "why": [
+                  "Mastery baixo/moderado (0.59)",
+                  "Readiness pelos pré-requisitos (0.33)",
+                  "Abaixo do limiar (0.50), mantido por soft-gating (k=1.60)",
+                  "Incerteza elevada (0.41) por evidência limitada"
+                ]
+              },
+              {
+                "concept_id": "domain_core",
+                "name": "Domain Core",
+                "score": 0.11305117845154197,
+                "readiness": 0.20787914820991327,
+                "mastery": 0.5,
+                "uncertainty": 0.5,
+                "why": [
+                  "Mastery baixo/moderado (0.50)",
+                  "Readiness pelos pré-requisitos (0.21)",
+                  "Abaixo do limiar (0.50), mantido por soft-gating (k=1.60)",
+                  "Incerteza elevada (0.50) por evidência limitada"
+                ]
+              }
+            ]
+          },
+          "notes": "approach=metacog_balanced, lambda=0.70, threshold=0.50, min_readiness=0.10, readiness_gamma=0.35, root_penalty=0.12, meta_strength=0.60, soft_gate_k=1.60"
+        },
+        {
+          "scenario_id": "S3",
+          "scenario_name": "Erros repetidos no core",
+          "expected_any": [
+            "domain_core",
+            "foundation"
+          ],
+          "top_recommendation": "domain_core",
+          "top_recommendations": [
+            "domain_core",
+            "foundation",
+            "advanced_problem"
+          ],
+          "rank_of_first_expected": 1,
+          "pass": true,
+          "hit_at_3": true,
+          "mrr": 1.0,
+          "ndcg_at_3": 1.0,
+          "avg_mastery": 0.4562254060746474,
+          "avg_uncertainty": 0.385077738870563,
+          "diagnostics": {
+            "candidates_before_gate": 3,
+            "candidates_after_gate": 1,
+            "candidates_ranked": 3,
+            "candidates_excluded_min_readiness": 0,
+            "readiness_distribution": [
+              0.1702705663215801,
+              0.4690740260882709,
+              1.0
+            ],
+            "concept_event_counts": {
+              "domain_core": 4,
+              "foundation": 1,
+              "advanced_problem": 0
+            },
+            "top_candidates": [
+              {
+                "concept_id": "domain_core",
+                "name": "Domain Core",
+                "score": 0.5088829033578044,
+                "readiness": 0.4690740260882709,
+                "mastery": 0.26195471741781556,
+                "uncertainty": 0.26195471741781556,
+                "why": [
+                  "Mastery baixo/moderado (0.26)",
+                  "Readiness pelos pré-requisitos (0.47)",
+                  "Abaixo do limiar (0.50), mantido por soft-gating (k=1.60)",
+                  "Incerteza controlada (0.26)"
+                ]
+              },
+              {
+                "concept_id": "foundation",
+                "name": "Foundation",
+                "score": 0.34608507929060855,
+                "readiness": 1.0,
+                "mastery": 0.6067215008061266,
+                "uncertainty": 0.3932784991938735,
+                "why": [
+                  "Mastery baixo/moderado (0.61)",
+                  "Readiness pelos pré-requisitos (1.00)",
+                  "Conceito raiz com penalização suave (0.12)",
+                  "Incerteza elevada (0.39) por evidência limitada"
+                ]
+              },
+              {
+                "concept_id": "advanced_problem",
+                "name": "Advanced Problem",
+                "score": 0.08181321809019758,
+                "readiness": 0.1702705663215801,
+                "mastery": 0.5,
+                "uncertainty": 0.5,
+                "why": [
+                  "Mastery baixo/moderado (0.50)",
+                  "Readiness pelos pré-requisitos (0.17)",
+                  "Abaixo do limiar (0.50), mantido por soft-gating (k=1.60)",
+                  "Incerteza elevada (0.50) por evidência limitada"
+                ]
+              }
+            ]
+          },
+          "notes": "approach=metacog_balanced, lambda=0.70, threshold=0.50, min_readiness=0.10, readiness_gamma=0.35, root_penalty=0.12, meta_strength=0.60, soft_gate_k=1.60"
+        },
+        {
+          "scenario_id": "S4",
+          "scenario_name": "Incerteza alta",
+          "expected_any": [
+            "foundation"
+          ],
+          "top_recommendation": "foundation",
+          "top_recommendations": [
+            "foundation",
+            "advanced_problem",
+            "domain_core"
+          ],
+          "rank_of_first_expected": 1,
+          "pass": true,
+          "hit_at_3": true,
+          "mrr": 1.0,
+          "ndcg_at_3": 1.0,
+          "avg_mastery": 0.4913926243609881,
+          "avg_uncertainty": 0.4810179664996148,
+          "diagnostics": {
+            "candidates_before_gate": 3,
+            "candidates_after_gate": 1,
+            "candidates_ranked": 3,
+            "candidates_excluded_min_readiness": 0,
+            "readiness_distribution": [
+              0.325,
+              1.0,
+              0.31910900825836874
+            ],
+            "concept_event_counts": {
+              "advanced_problem": 0,
+              "foundation": 2,
+              "domain_core": 0
+            },
+            "top_candidates": [
+              {
+                "concept_id": "foundation",
+                "name": "Foundation",
+                "score": 0.44087265964858896,
+                "readiness": 1.0,
+                "mastery": 0.4741778730829643,
+                "uncertainty": 0.4430538994988444,
+                "why": [
+                  "Mastery baixo/moderado (0.47)",
+                  "Readiness pelos pré-requisitos (1.00)",
+                  "Conceito raiz com penalização suave (0.12)",
+                  "Incerteza elevada (0.44) por evidência limitada"
+                ]
+              },
+              {
+                "concept_id": "advanced_problem",
+                "name": "Advanced Problem",
+                "score": 0.234034678994935,
+                "readiness": 0.325,
+                "mastery": 0.5,
+                "uncertainty": 0.5,
+                "why": [
+                  "Mastery baixo/moderado (0.50)",
+                  "Readiness pelos pré-requisitos (0.33)",
+                  "Abaixo do limiar (0.50), mantido por soft-gating (k=1.60)",
+                  "Incerteza elevada (0.50) por evidência limitada"
+                ]
+              },
+              {
+                "concept_id": "domain_core",
+                "name": "Domain Core",
+                "score": 0.22714066451933265,
+                "readiness": 0.31910900825836874,
+                "mastery": 0.5,
+                "uncertainty": 0.5,
+                "why": [
+                  "Mastery baixo/moderado (0.50)",
+                  "Readiness pelos pré-requisitos (0.32)",
+                  "Abaixo do limiar (0.50), mantido por soft-gating (k=1.60)",
+                  "Incerteza elevada (0.50) por evidência limitada"
+                ]
+              }
+            ]
+          },
+          "notes": "approach=metacog_balanced, lambda=0.70, threshold=0.50, min_readiness=0.10, readiness_gamma=0.35, root_penalty=0.12, meta_strength=0.60, soft_gate_k=1.60"
+        },
+        {
+          "scenario_id": "S5",
+          "scenario_name": "Multi-fonte",
+          "expected_any": [
+            "foundation",
+            "domain_core",
+            "advanced_problem"
+          ],
+          "top_recommendation": "advanced_problem",
+          "top_recommendations": [
+            "advanced_problem",
+            "domain_core",
+            "foundation"
+          ],
+          "rank_of_first_expected": 1,
+          "pass": true,
+          "hit_at_3": true,
+          "mrr": 1.0,
+          "ndcg_at_3": 1.0,
+          "avg_mastery": 0.5938151676184052,
+          "avg_uncertainty": 0.35016247002489526,
+          "diagnostics": {
+            "candidates_before_gate": 3,
+            "candidates_after_gate": 3,
+            "candidates_ranked": 3,
+            "candidates_excluded_min_readiness": 0,
+            "readiness_distribution": [
+              1.0,
+              0.6325721491126078,
+              0.5108245635142499
+            ],
+            "concept_event_counts": {
+              "domain_core": 1,
+              "advanced_problem": 1,
+              "foundation": 3
+            },
+            "top_candidates": [
+              {
+                "concept_id": "advanced_problem",
+                "name": "Advanced Problem",
+                "score": 0.5075103597762042,
+                "readiness": 0.5108245635142499,
+                "mastery": 0.4159664564649506,
+                "uncertainty": 0.4159664564649506,
+                "why": [
+                  "Mastery baixo/moderado (0.42)",
+                  "Readiness pelos pré-requisitos (0.51)",
+                  "Incerteza elevada (0.42) por evidência limitada"
+                ]
+              },
+              {
+                "concept_id": "domain_core",
+                "name": "Domain Core",
+                "score": 0.3490383470757511,
+                "readiness": 0.6325721491126078,
+                "mastery": 0.6376478248253703,
+                "uncertainty": 0.3623521751746297,
+                "why": [
+                  "Mastery baixo/moderado (0.64)",
+                  "Readiness pelos pré-requisitos (0.63)",
+                  "Incerteza elevada (0.36) por evidência limitada"
+                ]
+              },
+              {
+                "concept_id": "foundation",
+                "name": "Foundation",
+                "score": 0.2395085250228927,
+                "readiness": 1.0,
+                "mastery": 0.7278312215648947,
+                "uncertainty": 0.27216877843510534,
+                "why": [
+                  "Mastery baixo/moderado (0.73)",
+                  "Readiness pelos pré-requisitos (1.00)",
+                  "Conceito raiz com penalização suave (0.12)",
+                  "Incerteza controlada (0.27)"
+                ]
+              }
+            ]
+          },
+          "notes": "approach=metacog_balanced, lambda=0.70, threshold=0.50, min_readiness=0.10, readiness_gamma=0.35, root_penalty=0.12, meta_strength=0.60, soft_gate_k=1.60"
+        },
+        {
+          "scenario_id": "S6",
+          "scenario_name": "Cobertura parcial",
+          "expected_any": [
+            "foundation",
+            "domain_core"
+          ],
+          "top_recommendation": "domain_core",
+          "top_recommendations": [
+            "domain_core",
+            "advanced_problem",
+            "foundation"
+          ],
+          "rank_of_first_expected": 1,
+          "pass": true,
+          "hit_at_3": true,
+          "mrr": 1.0,
+          "ndcg_at_3": 1.0,
+          "avg_mastery": 0.5553942533939684,
+          "avg_uncertainty": 0.3938568328224535,
+          "diagnostics": {
+            "candidates_before_gate": 3,
+            "candidates_after_gate": 2,
+            "candidates_ranked": 3,
+            "candidates_excluded_min_readiness": 0,
+            "readiness_distribution": [
+              0.373234219201194,
+              1.0,
+              0.5543988665171351
+            ],
+            "concept_event_counts": {
+              "advanced_problem": 0,
+              "foundation": 2,
+              "domain_core": 3
+            },
+            "top_candidates": [
+              {
+                "concept_id": "domain_core",
+                "name": "Domain Core",
+                "score": 0.4376567281867598,
+                "readiness": 0.5543988665171351,
+                "mastery": 0.49625767387291625,
+                "uncertainty": 0.35149558477634935,
+                "why": [
+                  "Mastery baixo/moderado (0.50)",
+                  "Readiness pelos pré-requisitos (0.55)",
+                  "Incerteza elevada (0.35) por evidência limitada"
+                ]
+              },
+              {
+                "concept_id": "advanced_problem",
+                "name": "Advanced Problem",
+                "score": 0.2935470995504271,
+                "readiness": 0.373234219201194,
+                "mastery": 0.5,
+                "uncertainty": 0.5,
+                "why": [
+                  "Mastery baixo/moderado (0.50)",
+                  "Readiness pelos pré-requisitos (0.37)",
+                  "Abaixo do limiar (0.50), mantido por soft-gating (k=1.60)",
+                  "Incerteza elevada (0.50) por evidência limitada"
+                ]
+              },
+              {
+                "concept_id": "foundation",
+                "name": "Foundation",
+                "score": 0.29046592404808974,
+                "readiness": 1.0,
+                "mastery": 0.669925086308989,
+                "uncertainty": 0.33007491369101105,
+                "why": [
+                  "Mastery baixo/moderado (0.67)",
+                  "Readiness pelos pré-requisitos (1.00)",
+                  "Conceito raiz com penalização suave (0.12)",
+                  "Incerteza elevada (0.33) por evidência limitada"
+                ]
+              }
+            ]
+          },
+          "notes": "approach=metacog_balanced, lambda=0.70, threshold=0.50, min_readiness=0.10, readiness_gamma=0.35, root_penalty=0.12, meta_strength=0.60, soft_gate_k=1.60"
+        }
+      ]
+    },
+    {
+      "approach_id": "metacog_strict",
+      "approach_name": "Metacognitive Strict",
+      "description": "Ponderação metacognitiva forte + gating mais exigente",
+      "pass_rate": 0.8333333333333334,
+      "hit_at_3_rate": 1.0,
+      "avg_mrr": 0.9166666666666666,
+      "avg_ndcg_at_3": 0.9384882922619097,
+      "train_pass_rate": 0.6666666666666666,
+      "test_pass_rate": 1.0,
+      "train_avg_mrr": 0.8333333333333334,
+      "test_avg_mrr": 1.0,
+      "scenarios": [
+        {
+          "scenario_id": "S1",
+          "scenario_name": "Progressão linear",
+          "expected_any": [
+            "foundation",
+            "domain_core"
+          ],
+          "top_recommendation": "advanced_problem",
+          "top_recommendations": [
+            "advanced_problem",
+            "domain_core",
+            "foundation"
+          ],
+          "rank_of_first_expected": 2,
+          "pass": false,
+          "hit_at_3": true,
+          "mrr": 0.5,
+          "ndcg_at_3": 0.6309297535714575,
+          "avg_mastery": 0.5898887421536084,
+          "avg_uncertainty": 0.36287384583805316,
+          "diagnostics": {
+            "candidates_before_gate": 3,
+            "candidates_after_gate": 2,
+            "candidates_ranked": 3,
+            "candidates_excluded_min_readiness": 0,
+            "readiness_distribution": [
+              0.5793985229469212,
+              0.5303066420920781,
+              1.0
+            ],
+            "concept_event_counts": {
+              "advanced_problem": 1,
+              "domain_core": 2,
+              "foundation": 2
+            },
+            "top_candidates": [
+              {
+                "concept_id": "advanced_problem",
+                "name": "Advanced Problem",
+                "score": 0.46521586467070636,
+                "readiness": 0.5303066420920781,
+                "mastery": 0.4291438819874923,
+                "uncertainty": 0.4291438819874923,
+                "why": [
+                  "Mastery baixo/moderado (0.43)",
+                  "Readiness pelos pré-requisitos (0.53)",
+                  "Abaixo do limiar (0.55), mantido por soft-gating (k=1.80)",
+                  "Incerteza elevada (0.43) por evidência limitada"
+                ]
+              },
+              {
+                "concept_id": "domain_core",
+                "name": "Domain Core",
+                "score": 0.3332873969615649,
+                "readiness": 0.5793985229469212,
+                "mastery": 0.6520789941422801,
+                "uncertainty": 0.34792100585771985,
+                "why": [
+                  "Mastery baixo/moderado (0.65)",
+                  "Readiness pelos pré-requisitos (0.58)",
+                  "Incerteza elevada (0.35) por evidência limitada"
+                ]
+              },
+              {
+                "concept_id": "foundation",
+                "name": "Foundation",
+                "score": 0.2741698517086736,
+                "readiness": 1.0,
+                "mastery": 0.6884433503310528,
+                "uncertainty": 0.31155664966894725,
+                "why": [
+                  "Mastery baixo/moderado (0.69)",
+                  "Readiness pelos pré-requisitos (1.00)",
+                  "Conceito raiz com penalização suave (0.12)",
+                  "Incerteza elevada (0.31) por evidência limitada"
+                ]
+              }
+            ]
+          },
+          "notes": "approach=metacog_strict, lambda=0.65, threshold=0.55, min_readiness=0.10, readiness_gamma=0.35, root_penalty=0.12, meta_strength=1.00, soft_gate_k=1.80"
+        },
+        {
+          "scenario_id": "S2",
+          "scenario_name": "Pré-requisito bloqueado",
+          "expected_any": [
+            "foundation"
+          ],
+          "top_recommendation": "foundation",
+          "top_recommendations": [
+            "foundation",
+            "advanced_problem",
+            "domain_core"
+          ],
+          "rank_of_first_expected": 1,
+          "pass": true,
+          "hit_at_3": true,
+          "mrr": 1.0,
+          "ndcg_at_3": 1.0,
+          "avg_mastery": 0.4741569859343855,
+          "avg_uncertainty": 0.424822441601816,
+          "diagnostics": {
+            "candidates_before_gate": 3,
+            "candidates_after_gate": 1,
+            "candidates_ranked": 3,
+            "candidates_excluded_min_readiness": 0,
+            "readiness_distribution": [
+              1.0,
+              0.2265049418477964,
+              0.325
+            ],
+            "concept_event_counts": {
+              "domain_core": 0,
+              "advanced_problem": 1,
+              "foundation": 2
+            },
+            "top_candidates": [
+              {
+                "concept_id": "foundation",
+                "name": "Foundation",
+                "score": 0.48000414669566427,
+                "readiness": 1.0,
+                "mastery": 0.3484691413043022,
+                "uncertainty": 0.3484691413043022,
+                "why": [
+                  "Mastery baixo/moderado (0.35)",
+                  "Readiness pelos pré-requisitos (1.00)",
+                  "Conceito raiz com penalização suave (0.12)",
+                  "Incerteza elevada (0.35) por evidência limitada"
+                ]
+              },
+              {
+                "concept_id": "advanced_problem",
+                "name": "Advanced Problem",
+                "score": 0.15409686252111685,
+                "readiness": 0.325,
+                "mastery": 0.5740018164988543,
+                "uncertainty": 0.42599818350114577,
+                "why": [
+                  "Mastery baixo/moderado (0.57)",
+                  "Readiness pelos pré-requisitos (0.33)",
+                  "Abaixo do limiar (0.55), mantido por soft-gating (k=1.80)",
+                  "Incerteza elevada (0.43) por evidência limitada"
+                ]
+              },
+              {
+                "concept_id": "domain_core",
+                "name": "Domain Core",
+                "score": 0.09343169101983315,
+                "readiness": 0.2265049418477964,
+                "mastery": 0.5,
+                "uncertainty": 0.5,
+                "why": [
+                  "Mastery baixo/moderado (0.50)",
+                  "Readiness pelos pré-requisitos (0.23)",
+                  "Abaixo do limiar (0.55), mantido por soft-gating (k=1.80)",
+                  "Incerteza elevada (0.50) por evidência limitada"
+                ]
+              }
+            ]
+          },
+          "notes": "approach=metacog_strict, lambda=0.65, threshold=0.55, min_readiness=0.10, readiness_gamma=0.35, root_penalty=0.12, meta_strength=1.00, soft_gate_k=1.80"
+        },
+        {
+          "scenario_id": "S3",
+          "scenario_name": "Erros repetidos no core",
+          "expected_any": [
+            "domain_core",
+            "foundation"
+          ],
+          "top_recommendation": "domain_core",
+          "top_recommendations": [
+            "domain_core",
+            "foundation",
+            "advanced_problem"
+          ],
+          "rank_of_first_expected": 1,
+          "pass": true,
+          "hit_at_3": true,
+          "mrr": 1.0,
+          "ndcg_at_3": 1.0,
+          "avg_mastery": 0.4626683315748105,
+          "avg_uncertainty": 0.39766038806997,
+          "diagnostics": {
+            "candidates_before_gate": 3,
+            "candidates_after_gate": 1,
+            "candidates_ranked": 3,
+            "candidates_excluded_min_readiness": 0,
+            "readiness_distribution": [
+              0.18882050165366093,
+              1.0,
+              0.456641085597302
+            ],
+            "concept_event_counts": {
+              "foundation": 1,
+              "domain_core": 4,
+              "advanced_problem": 0
+            },
+            "top_candidates": [
+              {
+                "concept_id": "domain_core",
+                "name": "Domain Core",
+                "score": 0.3808143529108585,
+                "readiness": 0.456641085597302,
+                "mastery": 0.2904930794671707,
+                "uncertainty": 0.2904930794671707,
+                "why": [
+                  "Mastery baixo/moderado (0.29)",
+                  "Readiness pelos pré-requisitos (0.46)",
+                  "Abaixo do limiar (0.55), mantido por soft-gating (k=1.80)",
+                  "Incerteza controlada (0.29)"
+                ]
+              },
+              {
+                "concept_id": "foundation",
+                "name": "Foundation",
+                "score": 0.35418951457361053,
+                "readiness": 1.0,
+                "mastery": 0.5975119152572608,
+                "uncertainty": 0.40248808474273934,
+                "why": [
+                  "Mastery baixo/moderado (0.60)",
+                  "Readiness pelos pré-requisitos (1.00)",
+                  "Conceito raiz com penalização suave (0.12)",
+                  "Incerteza elevada (0.40) por evidência limitada"
+                ]
+              },
+              {
+                "concept_id": "advanced_problem",
+                "name": "Advanced Problem",
+                "score": 0.06706028518093192,
+                "readiness": 0.18882050165366093,
+                "mastery": 0.5,
+                "uncertainty": 0.5,
+                "why": [
+                  "Mastery baixo/moderado (0.50)",
+                  "Readiness pelos pré-requisitos (0.19)",
+                  "Abaixo do limiar (0.55), mantido por soft-gating (k=1.80)",
+                  "Incerteza elevada (0.50) por evidência limitada"
+                ]
+              }
+            ]
+          },
+          "notes": "approach=metacog_strict, lambda=0.65, threshold=0.55, min_readiness=0.10, readiness_gamma=0.35, root_penalty=0.12, meta_strength=1.00, soft_gate_k=1.80"
+        },
+        {
+          "scenario_id": "S4",
+          "scenario_name": "Incerteza alta",
+          "expected_any": [
+            "foundation"
+          ],
+          "top_recommendation": "foundation",
+          "top_recommendations": [
+            "foundation",
+            "advanced_problem",
+            "domain_core"
+          ],
+          "rank_of_first_expected": 1,
+          "pass": true,
+          "hit_at_3": true,
+          "mrr": 1.0,
+          "ndcg_at_3": 1.0,
+          "avg_mastery": 0.4933989086349034,
+          "avg_uncertainty": 0.48518650448553613,
+          "diagnostics": {
+            "candidates_before_gate": 3,
+            "candidates_after_gate": 1,
+            "candidates_ranked": 3,
+            "candidates_excluded_min_readiness": 0,
+            "readiness_distribution": [
+              0.3207508961948972,
+              0.325,
+              1.0
+            ],
+            "concept_event_counts": {
+              "advanced_problem": 0,
+              "foundation": 2,
+              "domain_core": 0
+            },
+            "top_candidates": [
+              {
+                "concept_id": "foundation",
+                "name": "Foundation",
+                "score": 0.4376398029271412,
+                "readiness": 1.0,
+                "mastery": 0.4801967259047102,
+                "uncertainty": 0.4555595134566085,
+                "why": [
+                  "Mastery baixo/moderado (0.48)",
+                  "Readiness pelos pré-requisitos (1.00)",
+                  "Conceito raiz com penalização suave (0.12)",
+                  "Incerteza elevada (0.46) por evidência limitada"
+                ]
+              },
+              {
+                "concept_id": "advanced_problem",
+                "name": "Advanced Problem",
+                "score": 0.18086563333984546,
+                "readiness": 0.325,
+                "mastery": 0.5,
+                "uncertainty": 0.5,
+                "why": [
+                  "Mastery baixo/moderado (0.50)",
+                  "Readiness pelos pré-requisitos (0.33)",
+                  "Abaixo do limiar (0.55), mantido por soft-gating (k=1.80)",
+                  "Incerteza elevada (0.50) por evidência limitada"
+                ]
+              },
+              {
+                "concept_id": "domain_core",
+                "name": "Domain Core",
+                "score": 0.1765510260327515,
+                "readiness": 0.3207508961948972,
+                "mastery": 0.5,
+                "uncertainty": 0.5,
+                "why": [
+                  "Mastery baixo/moderado (0.50)",
+                  "Readiness pelos pré-requisitos (0.32)",
+                  "Abaixo do limiar (0.55), mantido por soft-gating (k=1.80)",
+                  "Incerteza elevada (0.50) por evidência limitada"
+                ]
+              }
+            ]
+          },
+          "notes": "approach=metacog_strict, lambda=0.65, threshold=0.55, min_readiness=0.10, readiness_gamma=0.35, root_penalty=0.12, meta_strength=1.00, soft_gate_k=1.80"
+        },
+        {
+          "scenario_id": "S5",
+          "scenario_name": "Multi-fonte",
+          "expected_any": [
+            "foundation",
+            "domain_core",
+            "advanced_problem"
+          ],
+          "top_recommendation": "advanced_problem",
+          "top_recommendations": [
+            "advanced_problem",
+            "domain_core",
+            "foundation"
+          ],
+          "rank_of_first_expected": 1,
+          "pass": true,
+          "hit_at_3": true,
+          "mrr": 1.0,
+          "ndcg_at_3": 1.0,
+          "avg_mastery": 0.5918264377240182,
+          "avg_uncertainty": 0.36177604140140146,
+          "diagnostics": {
+            "candidates_before_gate": 3,
+            "candidates_after_gate": 2,
+            "candidates_ranked": 3,
+            "candidates_excluded_min_readiness": 0,
+            "readiness_distribution": [
+              1.0,
+              0.6190369977722412,
+              0.49681505478105775
+            ],
+            "concept_event_counts": {
+              "advanced_problem": 1,
+              "foundation": 3,
+              "domain_core": 1
+            },
+            "top_candidates": [
+              {
+                "concept_id": "advanced_problem",
+                "name": "Advanced Problem",
+                "score": 0.41191958116584954,
+                "readiness": 0.49681505478105775,
+                "mastery": 0.4304037186881295,
+                "uncertainty": 0.4304037186881295,
+                "why": [
+                  "Mastery baixo/moderado (0.43)",
+                  "Readiness pelos pré-requisitos (0.50)",
+                  "Abaixo do limiar (0.55), mantido por soft-gating (k=1.80)",
+                  "Incerteza elevada (0.43) por evidência limitada"
+                ]
+              },
+              {
+                "concept_id": "domain_core",
+                "name": "Domain Core",
+                "score": 0.35852997072466697,
+                "readiness": 0.6190369977722412,
+                "mastery": 0.6272704109489317,
+                "uncertainty": 0.3727295890510683,
+                "why": [
+                  "Mastery baixo/moderado (0.63)",
+                  "Readiness pelos pré-requisitos (0.62)",
+                  "Incerteza elevada (0.37) por evidência limitada"
+                ]
+              },
+              {
+                "concept_id": "foundation",
+                "name": "Foundation",
+                "score": 0.24833143848920577,
+                "readiness": 1.0,
+                "mastery": 0.7178051835349935,
+                "uncertainty": 0.2821948164650065,
+                "why": [
+                  "Mastery baixo/moderado (0.72)",
+                  "Readiness pelos pré-requisitos (1.00)",
+                  "Conceito raiz com penalização suave (0.12)",
+                  "Incerteza controlada (0.28)"
+                ]
+              }
+            ]
+          },
+          "notes": "approach=metacog_strict, lambda=0.65, threshold=0.55, min_readiness=0.10, readiness_gamma=0.35, root_penalty=0.12, meta_strength=1.00, soft_gate_k=1.80"
+        },
+        {
+          "scenario_id": "S6",
+          "scenario_name": "Cobertura parcial",
+          "expected_any": [
+            "foundation",
+            "domain_core"
+          ],
+          "top_recommendation": "domain_core",
+          "top_recommendations": [
+            "domain_core",
+            "foundation",
+            "advanced_problem"
+          ],
+          "rank_of_first_expected": 1,
+          "pass": true,
+          "hit_at_3": true,
+          "mrr": 1.0,
+          "ndcg_at_3": 1.0,
+          "avg_mastery": 0.5531328139668713,
+          "avg_uncertainty": 0.404040130042497,
+          "diagnostics": {
+            "candidates_before_gate": 3,
+            "candidates_after_gate": 1,
+            "candidates_ranked": 3,
+            "candidates_excluded_min_readiness": 0,
+            "readiness_distribution": [
+              1.0,
+              0.5362458967503919,
+              0.3739104086056003
+            ],
+            "concept_event_counts": {
+              "domain_core": 3,
+              "foundation": 2,
+              "advanced_problem": 0
+            },
+            "top_candidates": [
+              {
+                "concept_id": "domain_core",
+                "name": "Domain Core",
+                "score": 0.4119318851808934,
+                "readiness": 0.5362458967503919,
+                "mastery": 0.5029199998632867,
+                "uncertainty": 0.3685988321648184,
+                "why": [
+                  "Mastery baixo/moderado (0.50)",
+                  "Readiness pelos pré-requisitos (0.54)",
+                  "Abaixo do limiar (0.55), mantido por soft-gating (k=1.80)",
+                  "Incerteza elevada (0.37) por evidência limitada"
+                ]
+              },
+              {
+                "concept_id": "foundation",
+                "name": "Foundation",
+                "score": 0.302298971007152,
+                "readiness": 1.0,
+                "mastery": 0.6564784420373273,
+                "uncertainty": 0.34352155796267264,
+                "why": [
+                  "Mastery baixo/moderado (0.66)",
+                  "Readiness pelos pré-requisitos (1.00)",
+                  "Conceito raiz com penalização suave (0.12)",
+                  "Incerteza elevada (0.34) por evidência limitada"
+                ]
+              },
+              {
+                "concept_id": "advanced_problem",
+                "name": "Advanced Problem",
+                "score": 0.23400199519686435,
+                "readiness": 0.3739104086056003,
+                "mastery": 0.5,
+                "uncertainty": 0.5,
+                "why": [
+                  "Mastery baixo/moderado (0.50)",
+                  "Readiness pelos pré-requisitos (0.37)",
+                  "Abaixo do limiar (0.55), mantido por soft-gating (k=1.80)",
+                  "Incerteza elevada (0.50) por evidência limitada"
+                ]
+              }
+            ]
+          },
+          "notes": "approach=metacog_strict, lambda=0.65, threshold=0.55, min_readiness=0.10, readiness_gamma=0.35, root_penalty=0.12, meta_strength=1.00, soft_gate_k=1.80"
+        }
+      ]
+    }
+  ],
+  "best_approach_id": "metacog_strict",
+  "calibration": {
+    "train_scenarios": [
+      "S1",
+      "S2",
+      "S3"
+    ],
+    "test_scenarios": [
+      "S4",
+      "S5",
+      "S6"
+    ],
+    "selection_metric": "train_avg_mrr_then_hit_at_3_rate_then_train_pass_rate",
+    "selected_approach_id": "metacog_strict",
+    "selected_test_pass_rate": 1.0,
+    "selected_test_avg_mrr": 1.0
+  }
+}

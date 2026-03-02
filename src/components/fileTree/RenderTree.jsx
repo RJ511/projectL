@@ -2,23 +2,39 @@ export function renderTree(nodes, openFile, level = 0) {
   if (!Array.isArray(nodes)) return null;
 
   return nodes.map((node) => (
-    <div key={node.path} style={{ marginLeft: level * 12 }}>
+    <div key={node.path} style={{ marginLeft: level * 10 }}>
       <div
         style={{
           cursor: "pointer",
-          padding: "4px 6px",
-          borderRadius: 4,
+          padding: "2px 6px",
+          borderRadius: 6,
           display: "flex",
           alignItems: "center",
-          gap: 4,
-          color: "#E0E0E0",
+          gap: 6,
+          color: "#dbe7ff",
+          fontSize: 12,
+          lineHeight: 1.25,
+          minHeight: 22,
+          userSelect: "none",
         }}
         onClick={() => openFile(node)}
-        onMouseEnter={(e) => (e.currentTarget.style.background = "#2A2A2A")}
+        onMouseEnter={(e) => (e.currentTarget.style.background = "#1e293b")}
         onMouseLeave={(e) => (e.currentTarget.style.background = "transparent")}
+        title={node.path}
       >
-        {/*{node.is_dir ? "📁" : "📄"}*/}
-        {node.name}
+        <span style={{ opacity: 0.85, width: 12, textAlign: "center" }}>
+          {node.is_dir ? "▸" : "•"}
+        </span>
+        <span
+          style={{
+            whiteSpace: "nowrap",
+            overflow: "hidden",
+            textOverflow: "ellipsis",
+            flex: 1,
+          }}
+        >
+          {node.name}
+        </span>
       </div>
 
       {node.children && renderTree(node.children, openFile, level + 1)}

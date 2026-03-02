@@ -12,6 +12,10 @@ export function getTree(root) {
   return call("get_tree", { root });
 }
 
+export function createFolder(root, name) {
+  return call("create_folder", { root, name });
+}
+
 export function createFile(root, name) {
   return call("create_file", { root, name });
 }

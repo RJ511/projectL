@@ -10,18 +10,84 @@ export default function EditorContainer({
   renameFile,
   openFile,
 }) {
-  return (
-    <div style={{ flex: 1, display: "flex", flexDirection: "column" }}>
-      <div style={{ padding: 10, borderBottom: "1px solid #ddd" }}>
-        {selectedFile ? selectedFile.path : "Nenhum ficheiro aberto"}
-        {isDirty && " *"}
+  const fullPath = selectedFile ? selectedFile.path : "Nenhum ficheiro aberto";
+  const fileName = selectedFile ? selectedFile.name : "Sem ficheiro";
 
-        {selectedFile && <button onClick={renameFile}>Renomear</button>}
+  return (
+    <div
+      style={{
+        flex: 1,
+        display: "flex",
+        flexDirection: "column",
+        minWidth: 0,
+        margin: 10,
+        background: "#ffffff",
+        border: "1px solid #dbe5f4",
+        borderRadius: 12,
+        overflow: "hidden",
+      }}
+    >
+      <div
+        style={{
+          padding: "8px 10px",
+          borderBottom: "1px solid #dbe5f4",
+          display: "flex",
+          alignItems: "center",
+          gap: 6,
+          background: "#f8fbff",
+        }}
+      >
+        <div
+          style={{
+            flex: 1,
+            minWidth: 0,
+            overflow: "hidden",
+            display: "grid",
+            gap: 1,
+          }}
+          title={fullPath}
+        >
+          <div
+            style={{
+              fontSize: 12,
+              fontWeight: 700,
+              color: "#1e293b",
+              whiteSpace: "nowrap",
+              overflow: "hidden",
+              textOverflow: "ellipsis",
+            }}
+          >
+            {fileName}
+            {isDirty && " *"}
+          </div>
+          <div
+            style={{
+              fontSize: 11,
+              color: "#64748b",
+              whiteSpace: "nowrap",
+              overflow: "hidden",
+              textOverflow: "ellipsis",
+            }}
+          >
+            {fullPath}
+          </div>
+        </div>
+
+        {selectedFile && (
+          <button
+            type="button"
+            onClick={renameFile}
+            style={{ boxShadow: "none", padding: "5px 9px", fontSize: 12 }}
+          >
+            Renomear
+          </button>
+        )}
 
         <button
+          type="button"
           onClick={saveFile}
           disabled={!isDirty}
-          style={{ float: "right" }}
+          style={{ boxShadow: "none", padding: "5px 9px", fontSize: 12 }}
         >
           Guardar
         </button>
