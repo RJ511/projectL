@@ -6,3 +6,4 @@ deny.toml
 storybook-static
 node_modules
 dist/
+src-tauri/target/

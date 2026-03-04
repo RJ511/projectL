@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { ChevronLeft, ChevronRight, Sparkles, Target } from "lucide-react";
 import {
   addEdge,
+  getDebugRanking,
   getExplain,
   getOlmState,
   ingestEvent,
@@ -44,6 +45,8 @@ export default function OlmPanel({
   const [selectedExplainId, setSelectedExplainId] = useState("");
   const [explainRows, setExplainRows] = useState([]);
   const [error, setError] = useState("");
+  const [showDebug, setShowDebug] = useState(false);
+  const [debugRanking, setDebugRanking] = useState(null);
   const drawerLeft = 48;
   const drawerWidth = 296;
 
@@ -174,6 +177,16 @@ export default function OlmPanel({
     try {
       const rows = await getExplain(conceptRowId, 5);
       setExplainRows(rows);
+    } catch (err) {
+      setError(String(err));
+    }
+  }
+
+  async function onLoadDebugRanking() {
+    setError("");
+    try {
+      const result = await getDebugRanking({ top: 10 });
+      setDebugRanking(result);
     } catch (err) {
       setError(String(err));
     }
@@ -648,6 +661,76 @@ export default function OlmPanel({
                   </div>
                 </div>
               ))
+            )}
+          </div>
+
+          <div
+            style={{
+              background: "#ffffff",
+              border: "1px solid #dbe5f4",
+              borderRadius: 10,
+              padding: 8,
+              display: "grid",
+              gap: 6,
+            }}
+          >
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+              <strong style={{ fontSize: 12 }}>Debug Ranking</strong>
+              <button
+                type="button"
+                onClick={() => {
+                  setShowDebug((v) => !v);
+                  if (!showDebug) onLoadDebugRanking();
+                }}
+                style={{ fontSize: 11, padding: "2px 7px" }}
+              >
+                {showDebug ? "Ocultar" : "Mostrar"}
+              </button>
+            </div>
+            {showDebug && debugRanking && (
+              <div style={{ display: "grid", gap: 5 }}>
+                {debugRanking.candidates.length === 0 ? (
+                  <div style={{ fontSize: 12, color: "#6b7280" }}>Sem candidatos.</div>
+                ) : (
+                  debugRanking.candidates.map((item) => (
+                    <div
+                      key={item.concept_id}
+                      style={{
+                        fontSize: 11,
+                        background: "#f8fbff",
+                        border: "1px solid #e2e8f0",
+                        borderRadius: 8,
+                        padding: 6,
+                      }}
+                    >
+                      <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 2 }}>
+                        <strong style={{ fontSize: 12 }}>{item.name}</strong>
+                        <span style={{ color: "#0ea5e9" }}>score {(item.score * 100).toFixed(1)}%</span>
+                      </div>
+                      <div style={{ display: "flex", gap: 8, flexWrap: "wrap", color: "#64748b" }}>
+                        <span>m={item.mastery.toFixed(2)}</span>
+                        <span>u={item.uncertainty.toFixed(2)}</span>
+                        <span>r={item.readiness.toFixed(2)}</span>
+                        <span>gate={item.gate_factor.toFixed(2)}</span>
+                        <span>evts={item.event_count}</span>
+                      </div>
+                      <ul style={{ margin: "3px 0 0 12px", padding: 0, fontSize: 10, color: "#6b7280" }}>
+                        {item.why.map((w, i) => (
+                          <li key={i}>{w}</li>
+                        ))}
+                      </ul>
+                    </div>
+                  ))
+                )}
+                {debugRanking.diagnostics && (
+                  <div style={{ fontSize: 10, color: "#9ca3af", marginTop: 2 }}>
+                    total={debugRanking.diagnostics.candidates_before_gate} |
+                    ready={debugRanking.diagnostics.candidates_after_gate} |
+                    ranked={debugRanking.diagnostics.candidates_ranked} |
+                    excluded={debugRanking.diagnostics.candidates_excluded_min_readiness}
+                  </div>
+                )}
+              </div>
             )}
           </div>
 

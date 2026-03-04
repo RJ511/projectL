@@ -27,9 +27,9 @@ flowchart TD
   I --> J[Top recomendações + why]
 ```
 
-## 3) Modelo de dados em memória
+## 3) Modelo de dados (persistente desde v2)
 
-No backend (`src-tauri/src/commands/olm.rs`) o estado está em memória (não persistente ainda):
+O estado OLM é persistido em ficheiro JSON (AppData) entre reinícios da app via `olm_save_state` / `olm_load_state`.
 
 - `concepts`: conceitos
 - `edges`: pré-requisito -> alvo
@@ -37,6 +37,7 @@ No backend (`src-tauri/src/commands/olm.rs`) o estado está em memória (não pe
 - `content_concepts`: mapeamento conteúdo -> conceito com `coverage_weight`
 - `concept_state`: `alpha`, `beta`, `last_update`
 - `evidence`: lista de `EvidenceChunk` por conceito
+- **`config`**: parâmetros OLM persistidos (ver secção 15)
 
 ### Estado inicial por conceito
 
@@ -222,13 +223,18 @@ A segmentação por domínio pode ser reforçada com:
 
 ## 10) Factos e limites atuais
 
-- Estado OLM atual é em memória (reinício da app limpa estado).
+- Estado OLM é **persistido** em ficheiro JSON via `olm_save_state` / `olm_load_state` (atomic write com rename).
 - Eventos automáticos editor -> OLM estão ativos (`study_read` em abrir, `practice_attempt` em guardar).
 - Fórmulas já implementadas com defaults robustos (fallbacks para score, confidence e readiness).
 - Existe limite de 200 evidências por conceito para controlar crescimento.
+- `stop_mastery` e `exclude_concepts` permitem mitigar root-bias e excluir conceitos ruidosos.
+- `domain_filter` em `next_to_study` permite recomendações por domínio (prefixo de concept_id).
+- Uncertainty formula configurável: `standard` (1/N) ou `sqrt` (1/√N).
+- Decay temporal está disponível na config (`decay_enabled`) mas a computação efetiva está reservada para versão futura.
 
 ## 11) Endpoints/comandos do OLM (Tauri)
 
+### Existentes
 - `olm_upsert_concept`
 - `olm_list_concepts`
 - `olm_add_edge`
@@ -238,7 +244,13 @@ A segmentação por domínio pode ser reforçada com:
 - `olm_ingest_event`
 - `olm_get_state`
 - `olm_get_explain`
-- `olm_next_to_study`
+- `olm_next_to_study` (agora com `domain_filter` e `exclude` opcionais)
+
+### Novos (v2)
+- `olm_get_config` / `olm_set_config` — ler/gravar parâmetros OLM
+- `olm_save_state` / `olm_load_state` / `olm_reset_state` — persistência do estado
+- `olm_export_json` / `olm_import_json` — exportar/importar JSON completo
+- `olm_get_debug_ranking` — ranking completo com decomposição de score (debug)
 
 > Nota: as simulações sintéticas foram movidas para **CLI de teste** e não fazem parte da superfície final da app.
 
@@ -329,3 +341,77 @@ Por approach, devolve:
 ---
 
 Se quiseres, no próximo passo posso gerar também uma versão "Mestrado" deste mapa, já em formato de capítulo (Problema, Formalização, Algoritmo, Avaliação, Limitações e Trabalho Futuro).
+
+## 14) CLI de simulação — flags disponíveis (v2)
+
+```bash
+cd src-tauri
+
+# Simulação simples (determinística)
+cargo run --bin olm_sim
+
+# Output JSON
+cargo run --bin olm_sim -- --json
+cargo run --bin olm_sim -- --save           # guarda em results.json
+cargo run --bin olm_sim -- --out path.json  # guarda em ficheiro indicado
+
+# Multi-seed (mostra variância entre N seeds)
+cargo run --bin olm_sim -- --seeds 10
+cargo run --bin olm_sim -- --seed-range 0 29 --out multi_results.json
+```
+
+Multi-seed agrega métricas (pass_rate, hit@3, MRR, nDCG@3) por approach sobre N execuções.  
+As execuções atuais são determinísticas (seed=0 baseline); a variância por seed reflete a infraestrutura para futuras perturbações de payloads.
+
+## 15) Config OLM (parâmetros persistidos)
+
+| Campo | Default | Descrição |
+|-------|---------|-----------|
+| `lambda` | 0.70 | Peso de mastery vs uncertainty no score |
+| `gamma` | 0.35 | Intensidade de penalização por incerteza na readiness |
+| `theta` | 0.50 | Limiar de readiness para hard-gate |
+| `min_readiness` | 0.10 | Readiness mínima para aparecer no ranking |
+| `soft_gate_k` | 1.60 | Expoente do soft-gating (maior = mais restritivo) |
+| `meta_strength` | 0.60 | Intensidade da metacognição no peso do evento |
+| `root_penalty` | 0.12 | Penalização de score para conceitos raiz (sem prereqs) |
+| `stop_mastery` | 0.85 | Mastery acima do qual conceitos raiz são excluídos do ranking |
+| `exclude_concepts` | `[]` | Lista de concept_ids excluídos do `next_to_study` |
+| `uncertainty_formula` | `"standard"` | `"standard"` (1/N) ou `"sqrt"` (1/√N) |
+| `decay_enabled` | `false` | Ativar decay temporal (infraestrutura pronta, computação futura) |
+| `decay_half_life_days` | 30 | Semi-vida do decay em dias |
+
+### Como interpretar stop_mastery
+
+`stop_mastery` protege contra o "root-bias": quando um conceito raiz (sem pré-requisitos) já foi bem dominado (mastery > stop_mastery), é removido das recomendações para dar lugar a conceitos mais avançados.
+
+### Como usar exclude_concepts
+
+Adicionar `"Note Library Auto"` ou outros conceitos gerados automaticamente ao `exclude_concepts` evita que poluam as recomendações. Continuam visíveis no `olm_get_state` e `olm_get_explain`.
+
+## 16) Persistência — como funciona
+
+1. `olm_save_state(path?)` — serializa o estado completo (incluindo config) para JSON, usando atomic write (escreve `.tmp` e rename).  
+2. `olm_load_state(path?)` — carrega o JSON e substitui o estado em memória.  
+3. `olm_reset_state()` — repõe o estado ao default (vazio).  
+4. `olm_export_json()` — devolve o JSON como string (para debug/backup manual).  
+5. `olm_import_json(json)` — importa JSON de string.  
+
+Sem `path`, usa `AppData/projectL/olm_state.json`. Pode passar path explícito para backups.
+
+## 17) Debug Ranking
+
+`olm_get_debug_ranking(top?, domain_filter?, exclude?)` devolve:
+- `candidates`: todos os candidatos rankeados com campos adicionais:
+  - `gate_factor`: fator do soft-gating (1.0 se ready, < 1.0 se não)
+  - `event_count`: número de evidências já registadas para o conceito
+  - `why`: lista de razões textuais para o score
+- `diagnostics`: `candidates_before_gate`, `candidates_after_gate`, `candidates_ranked`, `candidates_excluded_min_readiness`, `readiness_distribution`, `concept_event_counts`, `top_candidates`
+
+Visível no OLM Panel → "Debug Ranking" no frontend.
+
+## 18) Limitações e próximos passos
+
+1. **Decay temporal**: infraestrutura criada (`decay_enabled`, `decay_half_life_days`), mas a computação efetiva de `alpha*decay_factor` / `beta*decay_factor` ao calcular mastery está reservada para versão futura (requer parsing de timestamps).
+2. **Item metrics reais**: `event_count` por conceito existe; métricas por ficheiro (acertos/erros, tempo de edição) são um próximo passo para `olm_next_to_study` baseado em content_id.
+3. **Domain-aware automático**: atualmente o `domain_filter` é passado explicitamente pelo frontend; uma inferência automática pela pasta ativa pode ser integrada em `Main.jsx`.
+4. **Testes de integração end-to-end**: smoke tests manuais documentados são o próximo passo (ver PROJECT_GUIDE.md).
