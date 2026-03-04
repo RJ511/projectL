@@ -21,6 +21,7 @@
     "@codemirror/view": "^6.38.8",
     "@floating-ui/dom": "^1.7.4",
     "@material/web": "^2.4.1",
+    "@rollup/rollup-linux-x64-gnu": "^4.59.0",
     "@tauri-apps/api": "^2",
     "@tauri-apps/plugin-dialog": "^2.4.2",
     "@tauri-apps/plugin-fs": "^2.4.4",
