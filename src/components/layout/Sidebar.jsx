@@ -5,6 +5,8 @@ export default function Sidebar({
   chooseDirectory,
   createMarkdown,
   openFile,
+  selectedNode,
+  createMarkdownInFolder,
 }) {
   return (
     <div
@@ -60,7 +62,7 @@ export default function Sidebar({
             Nenhuma pasta
           </p>
         ) : (
-          renderTree(tree, openFile)
+          renderTree(tree, openFile, selectedNode?.path, createMarkdownInFolder)
         )}
       </div>
     </div>

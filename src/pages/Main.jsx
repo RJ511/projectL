@@ -62,6 +62,7 @@ export default function Main() {
   const {
     tree,
     selectedFile,
+    selectedNode,
     content,
     isDirty,
     setContent,
@@ -70,6 +71,7 @@ export default function Main() {
     openFile,
     saveFile,
     createMarkdown,
+    createMarkdownInFolder,
     createQuizTemplate,
     renameSelected,
   } = useFileSystem(rootPath);
@@ -225,6 +227,8 @@ export default function Main() {
         chooseDirectory={chooseDirectory}
         createMarkdown={createMarkdown}
         openFile={openFile}
+        selectedNode={selectedNode}
+        createMarkdownInFolder={createMarkdownInFolder}
       />
 
       <div
