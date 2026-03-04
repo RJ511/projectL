@@ -22,7 +22,15 @@ fn main() {
             commands::olm_ingest_event,
             commands::olm_get_state,
             commands::olm_get_explain,
-            commands::olm_next_to_study
+            commands::olm_next_to_study,
+            commands::olm_get_config,
+            commands::olm_set_config,
+            commands::olm_reset_state,
+            commands::olm_export_json,
+            commands::olm_import_json,
+            commands::olm_save_state,
+            commands::olm_load_state,
+            commands::olm_get_debug_ranking,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

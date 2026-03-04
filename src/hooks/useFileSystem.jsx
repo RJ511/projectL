@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import {
   readFile,
   writeFile,
@@ -9,11 +9,7 @@ import {
 import { ingestEvent, upsertConcept } from "../services/olm.service";
 import { normalize } from "../services/pathTools";
 
-const DEFAULT_OLM_CONCEPT = {
-  id: "note_library_auto",
-  name: "Note Library Auto",
-  description: "Conceito automático para eventos do editor de ficheiros.",
-};
+const NODE_LEARNING_PROFILES_KEY = "nodeLearningProfiles.v1";
 
 function slugify(value) {
   return (value || "")
@@ -34,18 +30,166 @@ function makeTemplateContent(kind, title) {
   return `# ${heading}\n\n## Metadados\n- Tema:\n- Nível:\n- Objetivo:\n\n## Questões\n1. Pergunta\n- [ ] Opção A\n- [ ] Opção B\n- [ ] Opção C\n- [ ] Opção D\n\n2. Pergunta\n- [ ] Opção A\n- [ ] Opção B\n- [ ] Opção C\n- [ ] Opção D\n\n## Respostas corretas\n- 1:\n- 2:\n\n## Explicações\n- 1:\n- 2:\n`;
 }
 
+function safeParseJson(raw, fallback) {
+  try {
+    return JSON.parse(raw);
+  } catch {
+    return fallback;
+  }
+}
+
+function stripExtension(fileName) {
+  const idx = fileName.lastIndexOf(".");
+  if (idx <= 0) return fileName;
+  return fileName.slice(0, idx);
+}
+
+function classifyNode(node) {
+  if (!node?.is_dir) return "file";
+  const depth = normalize(node.path).split("/").filter(Boolean).length;
+  return depth <= 1 ? "domain" : "folder";
+}
+
+function defaultDifficulty(kind) {
+  if (kind === "domain") return 0.6;
+  if (kind === "folder") return 0.55;
+  return 0.5;
+}
+
+function buildDefaultProfile(node) {
+  const relPath = normalize(node?.path || "");
+  const segments = relPath.split("/").filter(Boolean);
+  const kind = classifyNode(node);
+
+  let conceptBase = node?.name || "Concept";
+
+  if (kind === "file") {
+    const parentFolder =
+      segments.length > 1 ? segments[segments.length - 2] : "";
+    conceptBase = parentFolder || stripExtension(node?.name || "") || "Concept";
+  }
+
+  const conceptId = slugify(conceptBase) || "concept-auto";
+  const conceptName = conceptBase;
+
+  return {
+    path: relPath,
+    kind,
+    conceptId,
+    conceptName,
+    difficulty: defaultDifficulty(kind),
+  };
+}
+
 export function useFileSystem(rootPath) {
   const [tree, setTree] = useState([]);
   const [selectedFile, setSelectedFile] = useState(null);
   const [selectedNode, setSelectedNode] = useState(null);
+  const [nodeProfiles, setNodeProfiles] = useState(() => {
+    const saved = localStorage.getItem(NODE_LEARNING_PROFILES_KEY);
+    const parsed = safeParseJson(saved, {});
+    return parsed && typeof parsed === "object" ? parsed : {};
+  });
   const [content, setContent] = useState("");
   const [isDirty, setIsDirty] = useState(false);
   const [fileType, setFileType] = useState("text");
+
+  useEffect(() => {
+    localStorage.setItem(
+      NODE_LEARNING_PROFILES_KEY,
+      JSON.stringify(nodeProfiles || {}),
+    );
+  }, [nodeProfiles]);
+
+  function getProfile(node) {
+    if (!node?.path) return null;
+    const key = normalize(node.path);
+    return nodeProfiles[key] || null;
+  }
+
+  function ensureProfile(node) {
+    if (!node?.path) return null;
+    const key = normalize(node.path);
+    const existing = nodeProfiles[key];
+    if (existing) return existing;
+
+    const fallback = buildDefaultProfile(node);
+    setNodeProfiles((prev) => ({
+      ...prev,
+      [key]: fallback,
+    }));
+    return fallback;
+  }
+
+  function saveNodeProfile(nodePath, updates = {}) {
+    const key = normalize(nodePath || "");
+    if (!key) return;
+
+    setNodeProfiles((prev) => {
+      const base = prev[key] || {
+        path: key,
+        kind: "file",
+        conceptId: "concept-auto",
+        conceptName: "Concept",
+        difficulty: 0.5,
+      };
+
+      const next = {
+        ...base,
+        ...updates,
+      };
+
+      next.path = key;
+      next.conceptId =
+        slugify(next.conceptId || base.conceptId) || base.conceptId;
+      next.conceptName = (
+        next.conceptName ||
+        base.conceptName ||
+        "Concept"
+      ).trim();
+      next.difficulty = Math.max(
+        0,
+        Math.min(1, Number(next.difficulty ?? base.difficulty)),
+      );
+
+      return {
+        ...prev,
+        [key]: next,
+      };
+    });
+  }
+
+  function ensureDefaultsForTree(nodes) {
+    setNodeProfiles((prev) => {
+      let changed = false;
+      const next = { ...prev };
+
+      function walk(list) {
+        if (!Array.isArray(list)) return;
+
+        for (const node of list) {
+          if (!node?.path) continue;
+          const key = normalize(node.path);
+          if (!next[key]) {
+            next[key] = buildDefaultProfile(node);
+            changed = true;
+          }
+          if (node.is_dir && Array.isArray(node.children)) {
+            walk(node.children);
+          }
+        }
+      }
+
+      walk(nodes);
+      return changed ? next : prev;
+    });
+  }
 
   async function loadTree() {
     if (!rootPath) return;
     const t = await getTree(rootPath);
     setTree(t);
+    ensureDefaultsForTree(t);
   }
 
   function getExt(name) {
@@ -57,9 +201,17 @@ export function useFileSystem(rootPath) {
     if (!rootPath || !node || node.is_dir) return;
 
     const eventDate = new Date();
+    const profile =
+      getProfile(node) || ensureProfile(node) || buildDefaultProfile(node);
+
+    const concept = {
+      id: profile.conceptId,
+      name: profile.conceptName,
+      description: `Conceito automático para ${profile.kind}: ${profile.path}`,
+    };
 
     try {
-      await upsertConcept(DEFAULT_OLM_CONCEPT);
+      await upsertConcept(concept);
 
       await ingestEvent({
         event_id: `evt-${eventDate.getTime()}-${Math.floor(Math.random() * 100000)}`,
@@ -67,8 +219,11 @@ export function useFileSystem(rootPath) {
         source: "editor",
         event_type: eventType,
         content_id: null,
-        concept_ids: [DEFAULT_OLM_CONCEPT.id],
-        payload,
+        concept_ids: [concept.id],
+        payload: {
+          ...payload,
+          difficulty: profile.difficulty,
+        },
       });
     } catch (err) {
       console.warn("OLM auto-track skipped:", err);
@@ -77,6 +232,7 @@ export function useFileSystem(rootPath) {
 
   async function openFile(node) {
     setSelectedNode(node || null);
+    ensureProfile(node);
     if (node.is_dir) return;
 
     const ext = getExt(node.name);
@@ -221,6 +377,7 @@ export function useFileSystem(rootPath) {
     tree,
     selectedFile,
     selectedNode,
+    nodeProfiles,
     content,
     isDirty,
     fileType,
@@ -233,6 +390,8 @@ export function useFileSystem(rootPath) {
     loadTree,
     openFile,
     saveFile,
+    saveNodeProfile,
+    getNodeProfile: getProfile,
     createMarkdown,
     createMarkdownInFolder,
     createQuizTemplate,

@@ -1,11 +1,49 @@
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use rand::{Rng, SeedableRng};
+use rand::rngs::StdRng;
 use std::cmp::Ordering;
 use std::collections::{HashMap, HashSet};
+use std::hash::{Hash, Hasher};
 use std::sync::Mutex;
 use tauri::State;
 
 const DEFAULT_META_STRENGTH: f64 = 0.6;
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OlmConfig {
+    pub lambda: f64,
+    pub gamma: f64,
+    pub theta: f64,
+    pub min_readiness: f64,
+    pub soft_gate_k: f64,
+    pub meta_strength: f64,
+    pub root_penalty: f64,
+    pub stop_mastery: f64,
+    pub exclude_concepts: Vec<String>,
+    pub uncertainty_formula: String,
+    pub decay_enabled: bool,
+    pub decay_half_life_days: f64,
+}
+
+impl Default for OlmConfig {
+    fn default() -> Self {
+        OlmConfig {
+            lambda: 0.7,
+            gamma: 0.35,
+            theta: 0.5,
+            min_readiness: 0.1,
+            soft_gate_k: 1.6,
+            meta_strength: DEFAULT_META_STRENGTH,
+            root_penalty: 0.12,
+            stop_mastery: 0.85,
+            exclude_concepts: vec![],
+            uncertainty_formula: "standard".to_string(),
+            decay_enabled: false,
+            decay_half_life_days: 30.0,
+        }
+    }
+}
 
 #[derive(Default)]
 pub struct OlmState {
@@ -20,6 +58,7 @@ struct OlmStore {
     content_concepts: Vec<ContentConceptMap>,
     concept_state: HashMap<String, ConceptState>,
     evidence: HashMap<String, Vec<EvidenceChunk>>,
+    config: OlmConfig,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -99,6 +138,8 @@ pub struct NextToStudyItem {
     pub readiness: f64,
     pub mastery: f64,
     pub uncertainty: f64,
+    pub gate_factor: f64,
+    pub event_count: usize,
     pub why: Vec<String>,
 }
 
@@ -119,6 +160,7 @@ struct ApproachConfig {
     root_penalty: f64,
     meta_strength: f64,
     soft_gate_k: Option<f64>,
+    stop_mastery: f64,
 }
 
 #[derive(Debug, Clone)]
@@ -192,6 +234,37 @@ pub struct SimulationReport {
     pub calibration: SimulationCalibrationSummary,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct OlmSnapshot {
+    concepts: HashMap<String, Concept>,
+    edges: Vec<ConceptEdge>,
+    content_items: HashMap<String, ContentItem>,
+    content_concepts: Vec<ContentConceptMap>,
+    concept_state: HashMap<String, ConceptState>,
+    evidence: HashMap<String, Vec<EvidenceChunk>>,
+    config: OlmConfig,
+}
+
+impl From<&OlmStore> for OlmSnapshot {
+    fn from(store: &OlmStore) -> Self {
+        OlmSnapshot {
+            concepts: store.concepts.clone(),
+            edges: store.edges.clone(),
+            content_items: store.content_items.clone(),
+            content_concepts: store.content_concepts.clone(),
+            concept_state: store.concept_state.clone(),
+            evidence: store.evidence.clone(),
+            config: store.config.clone(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct RankingDebugResponse {
+    pub candidates: Vec<NextToStudyItem>,
+    pub diagnostics: ScenarioDiagnostics,
+}
+
 fn clamp_01(value: f64) -> f64 {
     value.clamp(0.0, 1.0)
 }
@@ -223,6 +296,25 @@ fn uncertainty(state: &ConceptState) -> f64 {
     } else {
         1.0 / total
     }
+}
+
+fn uncertainty_with_formula(state: &ConceptState, formula: &str) -> f64 {
+    let total = state.alpha + state.beta;
+    if total <= 0.0 {
+        return 1.0;
+    }
+    match formula {
+        "sqrt" => 1.0 / total.sqrt(),
+        _ => 1.0 / total,
+    }
+}
+
+fn build_exclude_set(config_excludes: &[String], extra: Option<&[String]>) -> HashSet<String> {
+    let mut set: HashSet<String> = config_excludes.iter().cloned().collect();
+    if let Some(extra_list) = extra {
+        set.extend(extra_list.iter().cloned());
+    }
+    set
 }
 
 fn parse_payload_float(payload: &Value, key: &str) -> Option<f64> {
@@ -427,16 +519,23 @@ fn next_to_study_from_store(
     top: Option<usize>,
     lambda: f64,
     readiness_threshold: f64,
+    exclude_set: &HashSet<String>,
+    domain_filter: Option<&str>,
 ) -> Vec<NextToStudyItem> {
+    let config = &store.config;
     let (ranked, _) = rank_next_to_study(
         store,
         top,
         lambda,
         readiness_threshold,
-        0.1,
-        0.35,
-        Some(1.6),
-        0.12,
+        config.min_readiness,
+        config.gamma,
+        Some(config.soft_gate_k),
+        config.root_penalty,
+        config.stop_mastery,
+        exclude_set,
+        domain_filter,
+        &config.uncertainty_formula,
     );
     ranked
 }
@@ -454,6 +553,10 @@ fn rank_next_to_study(
     readiness_gamma: f64,
     soft_gate_k: Option<f64>,
     root_penalty: f64,
+    stop_mastery: f64,
+    exclude_set: &HashSet<String>,
+    domain_filter: Option<&str>,
+    uncertainty_formula: &str,
 ) -> (Vec<NextToStudyItem>, ScenarioDiagnostics) {
     let lam = clamp_01(lambda);
     let threshold = clamp_01(readiness_threshold);
@@ -475,7 +578,10 @@ fn rank_next_to_study(
             });
         state_by_id.insert(
             concept.id.clone(),
-            (mastery(&concept_state), uncertainty(&concept_state)),
+            (
+                mastery(&concept_state),
+                uncertainty_with_formula(&concept_state, uncertainty_formula),
+            ),
         );
     }
 
@@ -487,6 +593,18 @@ fn rank_next_to_study(
     let mut candidates_excluded_min_readiness = 0usize;
 
     for concept in store.concepts.values() {
+        // Domain filter: concept_id must start with domain_filter prefix
+        if let Some(prefix) = domain_filter {
+            if !concept.id.starts_with(prefix) {
+                continue;
+            }
+        }
+
+        // Exclude list
+        if exclude_set.contains(&concept.id) {
+            continue;
+        }
+
         candidates_before_gate += 1;
 
         let (concept_mastery, concept_uncertainty) = state_by_id
@@ -499,6 +617,11 @@ fn rank_next_to_study(
             .iter()
             .filter(|edge| edge.target_id == concept.id)
             .collect();
+
+        // Stop rule: root concepts with mastery above stop_mastery are removed
+        if prereqs.is_empty() && concept_mastery > stop_mastery {
+            continue;
+        }
 
         let readiness = if prereqs.is_empty() {
             1.0
@@ -524,13 +647,13 @@ fn rank_next_to_study(
             candidates_after_gate += 1;
         }
 
-        let gate_multiplier = if readiness >= threshold {
+        let gate_factor = if readiness >= threshold {
             1.0
         } else {
             (readiness / threshold.max(0.01)).powf(soft_k)
         };
 
-        if gate_multiplier <= 0.0 {
+        if gate_factor <= 0.0 {
             continue;
         }
 
@@ -541,7 +664,13 @@ fn rank_next_to_study(
             1.0
         };
         let slight_readiness_factor = 0.9 + (0.1 * readiness);
-        let score = base_priority * gate_multiplier * slight_readiness_factor * root_multiplier;
+        let score = base_priority * gate_factor * slight_readiness_factor * root_multiplier;
+
+        let event_count = store
+            .evidence
+            .get(&concept.id)
+            .map(|e| e.len())
+            .unwrap_or(0);
 
         let mut why = vec![
             format!("Mastery baixo/moderado ({:.2})", concept_mastery),
@@ -578,6 +707,8 @@ fn rank_next_to_study(
             readiness,
             mastery: concept_mastery,
             uncertainty: concept_uncertainty,
+            gate_factor,
+            event_count,
             why,
         });
         candidates_ranked += 1;
@@ -1026,6 +1157,23 @@ fn run_scenario_by_id(
     Ok(())
 }
 
+fn apply_seeded_scenario_noise(store: &mut OlmStore, seed: u64, scenario_id: &str) {
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    scenario_id.hash(&mut hasher);
+    let scenario_hash = hasher.finish();
+    let mixed_seed = seed ^ scenario_hash;
+
+    let mut rng = StdRng::seed_from_u64(mixed_seed);
+
+    for state in store.concept_state.values_mut() {
+        let alpha_jitter = 1.0 + rng.gen_range(-0.08_f64..=0.08_f64);
+        let beta_jitter = 1.0 + rng.gen_range(-0.08_f64..=0.08_f64);
+
+        state.alpha = (state.alpha * alpha_jitter).max(0.05);
+        state.beta = (state.beta * beta_jitter).max(0.05);
+    }
+}
+
 fn scenario_definitions() -> Vec<ScenarioDefinition> {
     vec![
         ScenarioDefinition {
@@ -1074,6 +1222,7 @@ fn approach_definitions() -> Vec<ApproachConfig> {
             root_penalty: 0.12,
             meta_strength: 0.0,
             soft_gate_k: Some(1.6),
+            stop_mastery: 0.99,
         },
         ApproachConfig {
             id: "metacog_balanced",
@@ -1086,6 +1235,7 @@ fn approach_definitions() -> Vec<ApproachConfig> {
             root_penalty: 0.12,
             meta_strength: 0.6,
             soft_gate_k: Some(1.6),
+            stop_mastery: 0.99,
         },
         ApproachConfig {
             id: "metacog_strict",
@@ -1098,6 +1248,7 @@ fn approach_definitions() -> Vec<ApproachConfig> {
             root_penalty: 0.12,
             meta_strength: 1.0,
             soft_gate_k: Some(1.8),
+            stop_mastery: 0.99,
         },
     ]
 }
@@ -1290,22 +1441,36 @@ pub fn olm_next_to_study(
     top: Option<usize>,
     lambda: Option<f64>,
     readiness_threshold: Option<f64>,
+    domain_filter: Option<String>,
+    exclude: Option<Vec<String>>,
 ) -> Result<Vec<NextToStudyItem>, String> {
     let store = state.inner.lock().map_err(|_| "State lock poisoned")?;
+    let config = &store.config;
+    let exclude_set = build_exclude_set(&config.exclude_concepts, exclude.as_deref());
     Ok(next_to_study_from_store(
         &store,
         top,
-        lambda.unwrap_or(0.7),
-        readiness_threshold.unwrap_or(0.5),
+        lambda.unwrap_or(config.lambda),
+        readiness_threshold.unwrap_or(config.theta),
+        &exclude_set,
+        domain_filter.as_deref(),
     ))
 }
 
 #[tauri::command]
 pub fn olm_run_synthetic_scenarios() -> Result<SimulationReport, String> {
+    olm_run_synthetic_scenarios_seeded(0)
+}
+
+pub fn olm_run_synthetic_scenarios_seeded(seed: u64) -> Result<SimulationReport, String> {
     let scenarios = scenario_definitions();
     let approaches = approach_definitions();
     let train_split = ["S1", "S2", "S3"];
     let test_split = ["S4", "S5", "S6"];
+
+    // seed is stored in report metadata; scenario logic is deterministic across seeds.
+    // Use --seeds N to evaluate variance-related robustness in future extensions.
+    let generated_at = format!("simulated-seed-{}", seed);
 
     let mut approach_reports = Vec::new();
 
@@ -1319,7 +1484,9 @@ pub fn olm_run_synthetic_scenarios() -> Result<SimulationReport, String> {
         for scenario in scenarios.iter() {
             let mut store = OlmStore::default();
             run_scenario_by_id(scenario.id, &mut store, approach)?;
+            apply_seeded_scenario_noise(&mut store, seed, scenario.id);
 
+            let sim_exclude: HashSet<String> = HashSet::new();
             let (ranked, diagnostics) = rank_next_to_study(
                 &store,
                 Some(3),
@@ -1329,6 +1496,10 @@ pub fn olm_run_synthetic_scenarios() -> Result<SimulationReport, String> {
                 approach.readiness_gamma,
                 approach.soft_gate_k,
                 approach.root_penalty,
+                approach.stop_mastery,
+                &sim_exclude,
+                None,
+                "standard",
             );
             let top_recommendation = ranked.first().map(|item| item.concept_id.clone());
             let top_recommendations: Vec<String> =
@@ -1466,10 +1637,544 @@ pub fn olm_run_synthetic_scenarios() -> Result<SimulationReport, String> {
     };
 
     Ok(SimulationReport {
-        generated_at: "simulated".to_string(),
+        generated_at,
         scenarios_count: scenarios.len(),
         approaches: approach_reports,
         best_approach_id,
         calibration,
     })
+}
+
+// ── New commands: config management ──────────────────────────────────────────
+
+#[tauri::command]
+pub fn olm_get_config(state: State<OlmState>) -> Result<OlmConfig, String> {
+    let store = state.inner.lock().map_err(|_| "State lock poisoned")?;
+    Ok(store.config.clone())
+}
+
+#[tauri::command]
+pub fn olm_set_config(state: State<OlmState>, config: OlmConfig) -> Result<OlmConfig, String> {
+    let mut store = state.inner.lock().map_err(|_| "State lock poisoned")?;
+    store.config = config.clone();
+    Ok(config)
+}
+
+// ── New commands: state persistence ──────────────────────────────────────────
+
+#[tauri::command]
+pub fn olm_reset_state(state: State<OlmState>) -> Result<(), String> {
+    let mut store = state.inner.lock().map_err(|_| "State lock poisoned")?;
+    *store = OlmStore::default();
+    Ok(())
+}
+
+#[tauri::command]
+pub fn olm_export_json(state: State<OlmState>) -> Result<String, String> {
+    let store = state.inner.lock().map_err(|_| "State lock poisoned")?;
+    let snapshot = OlmSnapshot::from(&*store);
+    serde_json::to_string_pretty(&snapshot).map_err(|e| format!("Serialization error: {}", e))
+}
+
+#[tauri::command]
+pub fn olm_import_json(state: State<OlmState>, json: String) -> Result<(), String> {
+    let snapshot: OlmSnapshot =
+        serde_json::from_str(&json).map_err(|e| format!("Deserialization error: {}", e))?;
+    let mut store = state.inner.lock().map_err(|_| "State lock poisoned")?;
+    store.concepts = snapshot.concepts;
+    store.edges = snapshot.edges;
+    store.content_items = snapshot.content_items;
+    store.content_concepts = snapshot.content_concepts;
+    store.concept_state = snapshot.concept_state;
+    store.evidence = snapshot.evidence;
+    store.config = snapshot.config;
+    Ok(())
+}
+
+#[tauri::command]
+pub fn olm_save_state(
+    app: tauri::AppHandle,
+    state: State<OlmState>,
+    path: Option<String>,
+) -> Result<String, String> {
+    use tauri::Manager;
+    let store = state.inner.lock().map_err(|_| "State lock poisoned")?;
+    let snapshot = OlmSnapshot::from(&*store);
+    let json = serde_json::to_string_pretty(&snapshot)
+        .map_err(|e| format!("Serialization error: {}", e))?;
+
+    let file_path = if let Some(p) = path {
+        std::path::PathBuf::from(p)
+    } else {
+        let data_dir = app
+            .path()
+            .app_data_dir()
+            .map_err(|e| format!("App data dir error: {}", e))?;
+        std::fs::create_dir_all(&data_dir)
+            .map_err(|e| format!("Create dir error: {}", e))?;
+        data_dir.join("olm_state.json")
+    };
+
+    let temp_path = file_path.with_extension("tmp");
+    std::fs::write(&temp_path, &json).map_err(|e| format!("Write error: {}", e))?;
+    std::fs::rename(&temp_path, &file_path).map_err(|e| format!("Rename error: {}", e))?;
+    Ok(file_path.to_string_lossy().to_string())
+}
+
+#[tauri::command]
+pub fn olm_load_state(
+    app: tauri::AppHandle,
+    state: State<OlmState>,
+    path: Option<String>,
+) -> Result<String, String> {
+    use tauri::Manager;
+    let file_path = if let Some(p) = path {
+        std::path::PathBuf::from(p)
+    } else {
+        let data_dir = app
+            .path()
+            .app_data_dir()
+            .map_err(|e| format!("App data dir error: {}", e))?;
+        data_dir.join("olm_state.json")
+    };
+
+    if !file_path.exists() {
+        return Err(format!("State file not found: {}", file_path.display()));
+    }
+
+    let json = std::fs::read_to_string(&file_path)
+        .map_err(|e| format!("Read error: {}", e))?;
+    let snapshot: OlmSnapshot =
+        serde_json::from_str(&json).map_err(|e| format!("Deserialization error: {}", e))?;
+
+    let mut store = state.inner.lock().map_err(|_| "State lock poisoned")?;
+    store.concepts = snapshot.concepts;
+    store.edges = snapshot.edges;
+    store.content_items = snapshot.content_items;
+    store.content_concepts = snapshot.content_concepts;
+    store.concept_state = snapshot.concept_state;
+    store.evidence = snapshot.evidence;
+    store.config = snapshot.config;
+    Ok(file_path.to_string_lossy().to_string())
+}
+
+// ── New command: debug ranking ────────────────────────────────────────────────
+
+#[tauri::command]
+pub fn olm_get_debug_ranking(
+    state: State<OlmState>,
+    top: Option<usize>,
+    domain_filter: Option<String>,
+    exclude: Option<Vec<String>>,
+) -> Result<RankingDebugResponse, String> {
+    let store = state.inner.lock().map_err(|_| "State lock poisoned")?;
+    let config = store.config.clone();
+    let exclude_set = build_exclude_set(&config.exclude_concepts, exclude.as_deref());
+    let (candidates, diagnostics) = rank_next_to_study(
+        &store,
+        top,
+        config.lambda,
+        config.theta,
+        config.min_readiness,
+        config.gamma,
+        Some(config.soft_gate_k),
+        config.root_penalty,
+        config.stop_mastery,
+        &exclude_set,
+        domain_filter.as_deref(),
+        &config.uncertainty_formula,
+    );
+    Ok(RankingDebugResponse {
+        candidates,
+        diagnostics,
+    })
+}
+
+// ── Unit tests ────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn make_state_cs(alpha: f64, beta: f64) -> ConceptState {
+        ConceptState {
+            alpha,
+            beta,
+            last_update: None,
+        }
+    }
+
+    fn make_event(event_type: &str, payload: Value) -> StudyEvent {
+        StudyEvent {
+            event_id: "test-1".to_string(),
+            timestamp: "2026-01-01T00:00:00Z".to_string(),
+            source: "test".to_string(),
+            event_type: event_type.to_string(),
+            content_id: None,
+            concept_ids: vec!["c1".to_string()],
+            payload,
+        }
+    }
+
+    #[test]
+    fn test_event_type_weight_all() {
+        assert_eq!(event_type_weight("quiz_attempt"), 1.0);
+        assert_eq!(event_type_weight("practice_attempt"), 0.7);
+        assert_eq!(event_type_weight("flashcard_review"), 0.6);
+        assert_eq!(event_type_weight("study_read"), 0.2);
+        assert_eq!(event_type_weight("self_assessment"), 0.3);
+        assert_eq!(event_type_weight("unknown"), 0.2);
+    }
+
+    #[test]
+    fn test_event_score_quiz() {
+        let e = make_event("quiz_attempt", json!({"correct": 3.0, "total": 4.0}));
+        assert!((event_score(&e) - 0.75).abs() < 1e-9);
+    }
+
+    #[test]
+    fn test_event_score_study_read() {
+        let e = make_event(
+            "study_read",
+            json!({"duration_sec": 150.0, "target_duration_sec": 300.0}),
+        );
+        // 0.5 * (150/300) = 0.25
+        assert!((event_score(&e) - 0.25).abs() < 1e-9);
+    }
+
+    #[test]
+    fn test_event_score_flashcard_again() {
+        let e = make_event("flashcard_review", json!({"rating": "again"}));
+        assert_eq!(event_score(&e), 0.0);
+    }
+
+    #[test]
+    fn test_event_score_flashcard_good() {
+        let e = make_event("flashcard_review", json!({"rating": "good"}));
+        assert_eq!(event_score(&e), 1.0);
+    }
+
+    #[test]
+    fn test_confidence_weight_present() {
+        let e = make_event("quiz_attempt", json!({"confidence": 0.8}));
+        // 0.5 + 0.5 * 0.8 = 0.9
+        assert!((confidence_weight(&e) - 0.9).abs() < 1e-9);
+    }
+
+    #[test]
+    fn test_confidence_weight_absent() {
+        let e = make_event("quiz_attempt", json!({}));
+        assert_eq!(confidence_weight(&e), 1.0);
+    }
+
+    #[test]
+    fn test_mastery_uncertainty_basic() {
+        let s = make_state_cs(3.0, 1.0);
+        assert!((mastery(&s) - 0.75).abs() < 1e-9);
+        assert!((uncertainty(&s) - 0.25).abs() < 1e-9);
+    }
+
+    #[test]
+    fn test_mastery_initial() {
+        let s = make_state_cs(1.0, 1.0);
+        assert!((mastery(&s) - 0.5).abs() < 1e-9);
+        assert!((uncertainty(&s) - 0.5).abs() < 1e-9);
+    }
+
+    #[test]
+    fn test_uncertainty_sqrt_formula() {
+        let s = make_state_cs(3.0, 1.0); // total = 4
+        let u_std = uncertainty_with_formula(&s, "standard");
+        let u_sqrt = uncertainty_with_formula(&s, "sqrt");
+        assert!((u_std - 0.25).abs() < 1e-9); // 1/4
+        assert!((u_sqrt - 0.5).abs() < 1e-9); // 1/sqrt(4)
+    }
+
+    #[test]
+    fn test_alpha_beta_update_bounds() {
+        let mut store = OlmStore::default();
+        store.concepts.insert(
+            "c1".to_string(),
+            Concept {
+                id: "c1".to_string(),
+                name: "C1".to_string(),
+                description: None,
+            },
+        );
+        ensure_state(&mut store, "c1");
+        let event = make_event("quiz_attempt", json!({"correct": 1.0, "total": 1.0}));
+        ingest_into_store(&mut store, &event, 0.0).unwrap();
+
+        let st = store.concept_state.get("c1").unwrap();
+        assert!(st.alpha > 1.0, "alpha should increase after correct answer");
+        assert!(st.beta >= 1.0, "beta should not drop below initial");
+        assert!(st.alpha <= 3.0, "alpha should be reasonable after one event");
+    }
+
+    #[test]
+    fn test_metacognitive_weight_zero_strength() {
+        let e = make_event("quiz_attempt", json!({"correct": 1.0, "total": 1.0, "confidence": 0.8}));
+        let (w, _) = metacognitive_signal(&e, Some(1.0), 0.0);
+        assert_eq!(w, 1.0, "meta_strength=0 should give weight=1.0");
+    }
+
+    #[test]
+    fn test_root_penalty_applied() {
+        let mut store = OlmStore::default();
+        store.concepts.insert(
+            "root".to_string(),
+            Concept {
+                id: "root".to_string(),
+                name: "Root".to_string(),
+                description: None,
+            },
+        );
+
+        let exclude = HashSet::new();
+        // Without penalty
+        let (ranked_no_penalty, _) =
+            rank_next_to_study(&store, None, 0.7, 0.5, 0.1, 0.35, Some(1.6), 0.0, 0.99, &exclude, None, "standard");
+        // With penalty=0.5
+        let (ranked_penalty, _) =
+            rank_next_to_study(&store, None, 0.7, 0.5, 0.1, 0.35, Some(1.6), 0.5, 0.99, &exclude, None, "standard");
+
+        let root_no_penalty = ranked_no_penalty.iter().find(|i| i.concept_id == "root").unwrap();
+        let root_penalty = ranked_penalty.iter().find(|i| i.concept_id == "root").unwrap();
+
+        assert!(
+            root_penalty.score < root_no_penalty.score,
+            "root score ({:.3}) should be reduced by penalty (was {:.3})",
+            root_penalty.score,
+            root_no_penalty.score
+        );
+    }
+
+    #[test]
+    fn test_stop_mastery_excludes_root() {
+        let mut store = OlmStore::default();
+        store.concepts.insert(
+            "root".to_string(),
+            Concept {
+                id: "root".to_string(),
+                name: "Root".to_string(),
+                description: None,
+            },
+        );
+        // Give root high mastery: alpha=10, beta=1 → mastery = 10/11 ≈ 0.91
+        store.concept_state.insert(
+            "root".to_string(),
+            ConceptState {
+                alpha: 10.0,
+                beta: 1.0,
+                last_update: None,
+            },
+        );
+
+        let exclude = HashSet::new();
+        // stop_mastery=0.7 → root mastery (0.91) > 0.7 → excluded
+        let (ranked, _) =
+            rank_next_to_study(&store, None, 0.7, 0.5, 0.1, 0.35, Some(1.6), 0.12, 0.7, &exclude, None, "standard");
+
+        assert!(
+            ranked.iter().all(|i| i.concept_id != "root"),
+            "root should be excluded by stop_mastery"
+        );
+    }
+
+    #[test]
+    fn test_stop_mastery_keeps_root_below_threshold() {
+        let mut store = OlmStore::default();
+        store.concepts.insert(
+            "root".to_string(),
+            Concept {
+                id: "root".to_string(),
+                name: "Root".to_string(),
+                description: None,
+            },
+        );
+        // mastery = 1/2 = 0.5 < 0.7
+        store.concept_state.insert(
+            "root".to_string(),
+            ConceptState {
+                alpha: 1.0,
+                beta: 1.0,
+                last_update: None,
+            },
+        );
+
+        let exclude = HashSet::new();
+        let (ranked, _) =
+            rank_next_to_study(&store, None, 0.7, 0.5, 0.1, 0.35, Some(1.6), 0.12, 0.7, &exclude, None, "standard");
+
+        assert!(
+            ranked.iter().any(|i| i.concept_id == "root"),
+            "root should remain when mastery < stop_mastery"
+        );
+    }
+
+    #[test]
+    fn test_exclude_list() {
+        let mut store = OlmStore::default();
+        store.concepts.insert(
+            "c1".to_string(),
+            Concept {
+                id: "c1".to_string(),
+                name: "C1".to_string(),
+                description: None,
+            },
+        );
+        store.concepts.insert(
+            "c2".to_string(),
+            Concept {
+                id: "c2".to_string(),
+                name: "C2".to_string(),
+                description: None,
+            },
+        );
+
+        let mut exclude = HashSet::new();
+        exclude.insert("c1".to_string());
+
+        let (ranked, _) =
+            rank_next_to_study(&store, None, 0.7, 0.5, 0.1, 0.35, Some(1.6), 0.12, 0.99, &exclude, None, "standard");
+
+        assert!(
+            ranked.iter().all(|i| i.concept_id != "c1"),
+            "c1 should be excluded"
+        );
+        assert!(
+            ranked.iter().any(|i| i.concept_id == "c2"),
+            "c2 should be present"
+        );
+    }
+
+    #[test]
+    fn test_build_exclude_set() {
+        let config_excludes = vec!["a".to_string(), "b".to_string()];
+        let extra = vec!["c".to_string()];
+        let set = build_exclude_set(&config_excludes, Some(&extra));
+        assert!(set.contains("a"));
+        assert!(set.contains("b"));
+        assert!(set.contains("c"));
+        assert_eq!(set.len(), 3);
+    }
+
+    #[test]
+    fn test_domain_filter() {
+        let mut store = OlmStore::default();
+        store.concepts.insert(
+            "math.algebra".to_string(),
+            Concept {
+                id: "math.algebra".to_string(),
+                name: "Algebra".to_string(),
+                description: None,
+            },
+        );
+        store.concepts.insert(
+            "physics.mechanics".to_string(),
+            Concept {
+                id: "physics.mechanics".to_string(),
+                name: "Mechanics".to_string(),
+                description: None,
+            },
+        );
+
+        let exclude = HashSet::new();
+        let (ranked, _) =
+            rank_next_to_study(&store, None, 0.7, 0.5, 0.1, 0.35, Some(1.6), 0.12, 0.99, &exclude, Some("math"), "standard");
+
+        assert!(
+            ranked.iter().all(|i| i.concept_id.starts_with("math")),
+            "only math concepts should be included"
+        );
+        assert_eq!(ranked.len(), 1, "exactly one math concept");
+    }
+
+    #[test]
+    fn test_readiness_soft_vs_strict_gating() {
+        let mut store = OlmStore::default();
+        store.concepts.insert(
+            "prereq".to_string(),
+            Concept {
+                id: "prereq".to_string(),
+                name: "Prereq".to_string(),
+                description: None,
+            },
+        );
+        store.concepts.insert(
+            "target".to_string(),
+            Concept {
+                id: "target".to_string(),
+                name: "Target".to_string(),
+                description: None,
+            },
+        );
+        store.edges.push(ConceptEdge {
+            prereq_id: "prereq".to_string(),
+            target_id: "target".to_string(),
+        });
+
+        let exclude = HashSet::new();
+        // k=2 soft gate
+        let (ranked_soft, _) =
+            rank_next_to_study(&store, None, 0.7, 0.5, 0.1, 0.35, Some(2.0), 0.0, 0.99, &exclude, None, "standard");
+        // k=3 strict gate
+        let (ranked_strict, _) =
+            rank_next_to_study(&store, None, 0.7, 0.5, 0.1, 0.35, Some(3.0), 0.0, 0.99, &exclude, None, "standard");
+
+        let target_soft = ranked_soft.iter().find(|i| i.concept_id == "target");
+        let target_strict = ranked_strict.iter().find(|i| i.concept_id == "target");
+
+        assert!(target_soft.is_some(), "target should appear in soft gating");
+        assert!(target_strict.is_some(), "target should appear in strict gating");
+        assert!(
+            target_soft.unwrap().score >= target_strict.unwrap().score,
+            "soft gating (k=2) should give higher score than strict (k=3) for unready concept"
+        );
+    }
+
+    #[test]
+    fn test_persistence_snapshot_roundtrip() {
+        let mut store = OlmStore::default();
+        store.concepts.insert(
+            "c1".to_string(),
+            Concept {
+                id: "c1".to_string(),
+                name: "C1".to_string(),
+                description: None,
+            },
+        );
+        store.concept_state.insert(
+            "c1".to_string(),
+            ConceptState {
+                alpha: 3.5,
+                beta: 1.2,
+                last_update: Some("2026-01-01T12:00:00Z".to_string()),
+            },
+        );
+        store.config.lambda = 0.65;
+        store.config.stop_mastery = 0.80;
+
+        let snapshot = OlmSnapshot::from(&store);
+        let json = serde_json::to_string(&snapshot).unwrap();
+        let restored: OlmSnapshot = serde_json::from_str(&json).unwrap();
+
+        assert_eq!(restored.concepts.len(), 1);
+        let restored_state = restored.concept_state.get("c1").unwrap();
+        assert!((restored_state.alpha - 3.5).abs() < 1e-9);
+        assert!((restored_state.beta - 1.2).abs() < 1e-9);
+        assert!((restored.config.lambda - 0.65).abs() < 1e-9);
+        assert!((restored.config.stop_mastery - 0.80).abs() < 1e-9);
+    }
+
+    #[test]
+    fn test_olm_config_default() {
+        let cfg = OlmConfig::default();
+        assert!((cfg.lambda - 0.7).abs() < 1e-9);
+        assert!((cfg.gamma - 0.35).abs() < 1e-9);
+        assert!((cfg.stop_mastery - 0.85).abs() < 1e-9);
+        assert!(!cfg.decay_enabled);
+        assert_eq!(cfg.uncertainty_formula, "standard");
+        assert!(cfg.exclude_concepts.is_empty());
+    }
 }

@@ -10,6 +10,7 @@ import KnowledgeLevels from "../components/insights/KnowledgeLevels";
 import { useFileSystem } from "../hooks/useFileSystem";
 import { useAppSettings } from "../hooks/useAppSettings";
 import { createFolder } from "../services/fs.service";
+import { normalize } from "../services/pathTools";
 import { open } from "@tauri-apps/plugin-dialog";
 
 const ONBOARDING_KEY = "appOnboardingDone";
@@ -63,6 +64,7 @@ export default function Main() {
     tree,
     selectedFile,
     selectedNode,
+    nodeProfiles,
     content,
     isDirty,
     setContent,
@@ -70,11 +72,17 @@ export default function Main() {
     loadTree,
     openFile,
     saveFile,
+    saveNodeProfile,
     createMarkdown,
     createMarkdownInFolder,
     createQuizTemplate,
     renameSelected,
   } = useFileSystem(rootPath);
+
+  const selectedNodeProfile = useMemo(
+    () => (selectedNode ? nodeProfiles[normalize(selectedNode.path)] : null),
+    [nodeProfiles, selectedNode],
+  );
 
   useEffect(() => {
     if (rootPath) {
@@ -220,6 +228,9 @@ export default function Main() {
         onFontSizeChange={setFontSize}
         onLineHeightChange={setLineHeight}
         onReset={resetSettings}
+        selectedNode={selectedNode}
+        selectedNodeProfile={selectedNodeProfile}
+        onSaveNodeProfile={saveNodeProfile}
       />
 
       <Sidebar

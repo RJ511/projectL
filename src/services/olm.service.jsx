@@ -37,11 +37,52 @@ export function getExplain(conceptId, limit = 5) {
 }
 
 export function nextToStudy(options = {}) {
-  const { top = 10, lambda = 0.7, readinessThreshold = 0.6 } = options;
+  const {
+    top = 10,
+    lambda = 0.7,
+    readinessThreshold = 0.6,
+    domainFilter = null,
+    exclude = null,
+  } = options;
 
   return call("olm_next_to_study", {
     top,
     lambda,
     readinessThreshold,
+    domainFilter,
+    exclude,
   });
+}
+
+export function getOlmConfig() {
+  return call("olm_get_config");
+}
+
+export function setOlmConfig(config) {
+  return call("olm_set_config", { config });
+}
+
+export function resetOlmState() {
+  return call("olm_reset_state");
+}
+
+export function exportOlmJson() {
+  return call("olm_export_json");
+}
+
+export function importOlmJson(json) {
+  return call("olm_import_json", { json });
+}
+
+export function saveOlmState(path = null) {
+  return call("olm_save_state", { path });
+}
+
+export function loadOlmState(path = null) {
+  return call("olm_load_state", { path });
+}
+
+export function getDebugRanking(options = {}) {
+  const { top = null, domainFilter = null, exclude = null } = options;
+  return call("olm_get_debug_ranking", { top, domainFilter, exclude });
 }

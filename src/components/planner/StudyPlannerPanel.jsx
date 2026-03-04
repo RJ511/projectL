@@ -44,7 +44,11 @@ function loadPlans() {
   }
 }
 
-export default function StudyPlannerPanel({ open, onClose }) {
+export default function StudyPlannerPanel({
+  open,
+  onClose,
+  domainFilter = null,
+}) {
   const [viewDate, setViewDate] = useState(new Date());
   const [selectedDate, setSelectedDate] = useState(toIsoDay(new Date()));
   const [plans, setPlans] = useState(loadPlans);
@@ -63,10 +67,10 @@ export default function StudyPlannerPanel({ open, onClose }) {
   useEffect(() => {
     if (!open) return;
 
-    nextToStudy({ top: 5, lambda: 0.7, readinessThreshold: 0.5 })
+    nextToStudy({ top: 5, lambda: 0.7, readinessThreshold: 0.5, domainFilter })
       .then((rows) => setRecommendations(Array.isArray(rows) ? rows : []))
       .catch(() => setRecommendations([]));
-  }, [open]);
+  }, [open, domainFilter]);
 
   const monthCells = useMemo(() => getMonthDays(viewDate), [viewDate]);
 

@@ -131,8 +131,6 @@ M2 — Registo de conteúdo + mapeamento conteúdo→conceitos
 
 Manual (obrigatório). Automático via LLM (opcional, “extra”, não core).
 
-Proposta_Mestrado_IPSantarem_v3…
-
 M3 — Event pipeline (ingestão)
 
 Um schema único de eventos (“o que aconteceu”) para integrar ferramentas num PLE (o teu contexto).
