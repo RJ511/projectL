@@ -37,6 +37,7 @@ function makeTemplateContent(kind, title) {
 export function useFileSystem(rootPath) {
   const [tree, setTree] = useState([]);
   const [selectedFile, setSelectedFile] = useState(null);
+  const [selectedNode, setSelectedNode] = useState(null);
   const [content, setContent] = useState("");
   const [isDirty, setIsDirty] = useState(false);
   const [fileType, setFileType] = useState("text");
@@ -75,6 +76,7 @@ export function useFileSystem(rootPath) {
   }
 
   async function openFile(node) {
+    setSelectedNode(node || null);
     if (node.is_dir) return;
 
     const ext = getExt(node.name);
@@ -114,10 +116,47 @@ export function useFileSystem(rootPath) {
   }
 
   async function createMarkdown() {
-    const name = prompt("Nome do ficheiro:");
-    if (!name) return;
+    const rawName = prompt("Nome do ficheiro (.md):");
+    if (!rawName) return;
 
-    await createFile(rootPath, name);
+    const trimmedName = rawName.trim();
+    if (!trimmedName) return;
+
+    const name = trimmedName.toLowerCase().endsWith(".md")
+      ? trimmedName
+      : `${trimmedName}.md`;
+
+    const targetNode = selectedNode || selectedFile;
+    const basePath = targetNode?.is_dir
+      ? normalize(targetNode.path)
+      : normalize(targetNode?.path || "")
+          .split("/")
+          .slice(0, -1)
+          .join("/");
+    const relPath = basePath ? `${basePath}/${name}` : name;
+
+    await createFile(rootPath, relPath);
+    await loadTree();
+  }
+
+  async function createMarkdownInFolder(node) {
+    if (!node || !node.is_dir) return;
+
+    setSelectedNode(node);
+
+    const rawName = prompt(`Nome do ficheiro em ${node.name} (.md):`);
+    if (!rawName) return;
+
+    const trimmedName = rawName.trim();
+    if (!trimmedName) return;
+
+    const fileName = trimmedName.toLowerCase().endsWith(".md")
+      ? trimmedName
+      : `${trimmedName}.md`;
+
+    const relPath = `${normalize(node.path)}/${fileName}`;
+
+    await createFile(rootPath, relPath);
     await loadTree();
   }
 
@@ -144,9 +183,10 @@ export function useFileSystem(rootPath) {
     const datePart = new Date().toISOString().slice(0, 10);
     const cleanTitle = slugify(title) || kind;
 
-    const selectedRelPath = selectedFile?.path || "";
+    const targetNode = selectedNode || selectedFile;
+    const selectedRelPath = targetNode?.path || "";
     const segments = selectedRelPath.split(/[\\/]/).filter(Boolean);
-    const folderPath = selectedFile?.is_dir
+    const folderPath = targetNode?.is_dir
       ? segments.join("/")
       : segments.slice(0, -1).join("/");
 
@@ -180,6 +220,7 @@ export function useFileSystem(rootPath) {
     // estado
     tree,
     selectedFile,
+    selectedNode,
     content,
     isDirty,
     fileType,
@@ -193,6 +234,7 @@ export function useFileSystem(rootPath) {
     openFile,
     saveFile,
     createMarkdown,
+    createMarkdownInFolder,
     createQuizTemplate,
     renameSelected,
   };

@@ -1,4 +1,10 @@
-export function renderTree(nodes, openFile, level = 0) {
+export function renderTree(
+  nodes,
+  openFile,
+  selectedPath,
+  onCreateFileInFolder,
+  level = 0,
+) {
   if (!Array.isArray(nodes)) return null;
 
   return nodes.map((node) => (
@@ -16,10 +22,21 @@ export function renderTree(nodes, openFile, level = 0) {
           lineHeight: 1.25,
           minHeight: 22,
           userSelect: "none",
+          background: selectedPath === node.path ? "#1e293b" : "transparent",
         }}
         onClick={() => openFile(node)}
+        onContextMenu={(e) => {
+          e.preventDefault();
+          openFile(node);
+          if (node.is_dir && typeof onCreateFileInFolder === "function") {
+            onCreateFileInFolder(node);
+          }
+        }}
         onMouseEnter={(e) => (e.currentTarget.style.background = "#1e293b")}
-        onMouseLeave={(e) => (e.currentTarget.style.background = "transparent")}
+        onMouseLeave={(e) => {
+          e.currentTarget.style.background =
+            selectedPath === node.path ? "#1e293b" : "transparent";
+        }}
         title={node.path}
       >
         <span style={{ opacity: 0.85, width: 12, textAlign: "center" }}>
@@ -37,7 +54,14 @@ export function renderTree(nodes, openFile, level = 0) {
         </span>
       </div>
 
-      {node.children && renderTree(node.children, openFile, level + 1)}
+      {node.children &&
+        renderTree(
+          node.children,
+          openFile,
+          selectedPath,
+          onCreateFileInFolder,
+          level + 1,
+        )}
     </div>
   ));
 }
