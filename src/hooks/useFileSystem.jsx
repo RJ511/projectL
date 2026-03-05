@@ -1,15 +1,24 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
+  createFolder,
   readFile,
   writeFile,
   getTree,
   createFile,
+  deletePath,
   renameFile,
 } from "../services/fs.service";
-import { ingestEvent, upsertConcept } from "../services/olm.service";
+import {
+  ingestEvent,
+  mapContentConcept,
+  upsertConcept,
+  upsertContentItem,
+} from "../services/olm.service";
 import { normalize } from "../services/pathTools";
 
 const NODE_LEARNING_PROFILES_KEY = "nodeLearningProfiles.v1";
+const LEARNING_ANALYTICS_KEY = "learningAnalytics.v1";
+const INLINE_CONCEPT_REGEX = /(;{2,3})\s*([^;\n][^;\n]{0,80}?)\s*\1/g;
 
 function slugify(value) {
   return (value || "")
@@ -50,34 +59,170 @@ function classifyNode(node) {
   return depth <= 1 ? "domain" : "folder";
 }
 
+function domainFromPath(path) {
+  const rel = normalize(path || "");
+  const [first] = rel.split("/").filter(Boolean);
+  return first || "";
+}
+
+function normalizeConceptId(rawConceptId, domainId) {
+  const raw = String(rawConceptId || "").trim();
+  const rawParts = raw
+    .split(".")
+    .map((part) => slugify(part))
+    .filter(Boolean);
+
+  const safeDomain = slugify(domainId || "") || "root";
+
+  if (!rawParts.length) {
+    return `${safeDomain}.concept-auto`;
+  }
+
+  if (rawParts[0] !== safeDomain) {
+    return [safeDomain, ...rawParts].join(".");
+  }
+
+  return rawParts.join(".");
+}
+
 function defaultDifficulty(kind) {
   if (kind === "domain") return 0.6;
   if (kind === "folder") return 0.55;
   return 0.5;
 }
 
+function extractInlineConcepts(content, domainId) {
+  const text = String(content || "");
+  if (!text) return [];
+
+  const byId = new Map();
+
+  for (const match of text.matchAll(INLINE_CONCEPT_REGEX)) {
+    const rawLabel = String(match?.[2] || "").trim();
+    if (!rawLabel) continue;
+
+    const conceptId = normalizeConceptId(`inline.${rawLabel}`, domainId);
+    if (!conceptId) continue;
+
+    if (!byId.has(conceptId)) {
+      byId.set(conceptId, {
+        id: conceptId,
+        name: rawLabel,
+        description: `Conceito inline extraído de marcação ;;;${rawLabel};;;`,
+      });
+    }
+  }
+
+  return Array.from(byId.values());
+}
+
 function buildDefaultProfile(node) {
   const relPath = normalize(node?.path || "");
   const segments = relPath.split("/").filter(Boolean);
   const kind = classifyNode(node);
+  const domainName = domainFromPath(relPath);
+  const domainId = slugify(domainName || "") || "root";
 
   let conceptBase = node?.name || "Concept";
+  let conceptId = `${domainId}.concept-auto`;
 
-  if (kind === "file") {
-    const parentFolder =
-      segments.length > 1 ? segments[segments.length - 2] : "";
-    conceptBase = parentFolder || stripExtension(node?.name || "") || "Concept";
+  if (kind === "domain") {
+    conceptBase = `${node?.name || "Domain"} Core`;
+    conceptId = `${domainId}.core`;
+  } else if (kind === "folder") {
+    const scope = segments
+      .slice(1)
+      .map((part) => slugify(part))
+      .filter(Boolean);
+    conceptId = [domainId, ...scope, "core"].filter(Boolean).join(".");
+  } else if (kind === "file") {
+    const parentScope = segments
+      .slice(1, -1)
+      .map((part) => slugify(part))
+      .filter(Boolean);
+    const fileStem = slugify(stripExtension(node?.name || "")) || "note";
+    conceptBase = stripExtension(node?.name || "") || "Concept";
+    conceptId = [domainId, ...parentScope, fileStem].filter(Boolean).join(".");
   }
-
-  const conceptId = slugify(conceptBase) || "concept-auto";
   const conceptName = conceptBase;
 
   return {
     path: relPath,
     kind,
+    domainId,
+    domainName,
     conceptId,
     conceptName,
     difficulty: defaultDifficulty(kind),
+  };
+}
+
+function normalizeProfile(profile, node) {
+  const base = profile || buildDefaultProfile(node);
+  const domainName =
+    base.domainName || domainFromPath(base.path || node?.path || "");
+  const domainId = slugify(base.domainId || domainName || "") || "root";
+  const conceptId = normalizeConceptId(
+    base.conceptId || base.conceptName || "concept-auto",
+    domainId,
+  );
+
+  return {
+    ...base,
+    domainId,
+    domainName,
+    conceptId,
+    conceptName: (base.conceptName || "Concept").trim(),
+    difficulty: Math.max(
+      0,
+      Math.min(1, Number(base.difficulty ?? defaultDifficulty(base.kind))),
+    ),
+  };
+}
+
+function defaultAnalytics() {
+  return {
+    sessions: [],
+    fileOpenCount: {},
+    fileTimeSec: {},
+    domainTimeSec: {},
+    domainResourceOpenCount: {},
+    completionByFile: {},
+    metaCognitiveProgress: [],
+  };
+}
+
+function safeAnalytics(raw) {
+  const fallback = defaultAnalytics();
+  const parsed = safeParseJson(raw, fallback);
+  return {
+    ...fallback,
+    ...(parsed && typeof parsed === "object" ? parsed : {}),
+    sessions: Array.isArray(parsed?.sessions) ? parsed.sessions : [],
+    fileOpenCount:
+      parsed?.fileOpenCount && typeof parsed.fileOpenCount === "object"
+        ? parsed.fileOpenCount
+        : {},
+    fileTimeSec:
+      parsed?.fileTimeSec && typeof parsed.fileTimeSec === "object"
+        ? parsed.fileTimeSec
+        : {},
+    domainTimeSec:
+      parsed?.domainTimeSec && typeof parsed.domainTimeSec === "object"
+        ? parsed.domainTimeSec
+        : {},
+    domainResourceOpenCount:
+      parsed?.domainResourceOpenCount &&
+      typeof parsed.domainResourceOpenCount === "object"
+        ? parsed.domainResourceOpenCount
+        : {},
+    completionByFile:
+      parsed?.completionByFile && typeof parsed.completionByFile === "object"
+        ? parsed.completionByFile
+        : {},
+    metaCognitiveProgress: Array.isArray(parsed?.metaCognitiveProgress)
+      ? parsed.metaCognitiveProgress
+      : [],
   };
 }
 
@@ -93,6 +238,11 @@ export function useFileSystem(rootPath) {
   const [content, setContent] = useState("");
   const [isDirty, setIsDirty] = useState(false);
   const [fileType, setFileType] = useState("text");
+  const [learningAnalytics, setLearningAnalytics] = useState(() =>
+    safeAnalytics(localStorage.getItem(LEARNING_ANALYTICS_KEY)),
+  );
+  const sessionStartRef = useRef(Date.now());
+  const activeFileRef = useRef({ path: null, domain: null, startedAt: 0 });
 
   useEffect(() => {
     localStorage.setItem(
@@ -100,6 +250,102 @@ export function useFileSystem(rootPath) {
       JSON.stringify(nodeProfiles || {}),
     );
   }, [nodeProfiles]);
+
+  useEffect(() => {
+    localStorage.setItem(
+      LEARNING_ANALYTICS_KEY,
+      JSON.stringify(learningAnalytics || defaultAnalytics()),
+    );
+  }, [learningAnalytics]);
+
+  function updateAnalytics(mutator) {
+    setLearningAnalytics((prev) => {
+      const base = prev || defaultAnalytics();
+      const next = mutator({ ...base }) || base;
+      return next;
+    });
+  }
+
+  function closeActiveFileTimer() {
+    const active = activeFileRef.current;
+    if (!active?.path || !active.startedAt) return;
+
+    const elapsedSec = Math.max(
+      0,
+      Math.round((Date.now() - active.startedAt) / 1000),
+    );
+    if (elapsedSec <= 0) {
+      activeFileRef.current = { path: null, domain: null, startedAt: 0 };
+      return;
+    }
+
+    updateAnalytics((current) => {
+      const fileTimeSec = { ...(current.fileTimeSec || {}) };
+      const domainTimeSec = { ...(current.domainTimeSec || {}) };
+      fileTimeSec[active.path] = (fileTimeSec[active.path] || 0) + elapsedSec;
+      if (active.domain) {
+        domainTimeSec[active.domain] =
+          (domainTimeSec[active.domain] || 0) + elapsedSec;
+      }
+      return {
+        ...current,
+        fileTimeSec,
+        domainTimeSec,
+      };
+    });
+
+    activeFileRef.current = { path: null, domain: null, startedAt: 0 };
+  }
+
+  function startActiveFileTimer(node) {
+    closeActiveFileTimer();
+    const path = normalize(node?.path || "");
+    const domain = domainFromPath(path);
+    activeFileRef.current = {
+      path,
+      domain,
+      startedAt: Date.now(),
+    };
+  }
+
+  function closeSessionWindow() {
+    closeActiveFileTimer();
+    const startedAt = sessionStartRef.current;
+    const endedAt = Date.now();
+    const durationSec = Math.max(0, Math.round((endedAt - startedAt) / 1000));
+
+    updateAnalytics((current) => {
+      const sessions = [...(current.sessions || [])];
+      sessions.push({
+        startedAt: new Date(startedAt).toISOString(),
+        endedAt: new Date(endedAt).toISOString(),
+        durationSec,
+      });
+
+      if (sessions.length > 300) {
+        sessions.splice(0, sessions.length - 300);
+      }
+
+      return {
+        ...current,
+        sessions,
+      };
+    });
+
+    sessionStartRef.current = Date.now();
+  }
+
+  useEffect(() => {
+    const onBeforeUnload = () => {
+      closeSessionWindow();
+    };
+
+    window.addEventListener("beforeunload", onBeforeUnload);
+    return () => {
+      window.removeEventListener("beforeunload", onBeforeUnload);
+      closeSessionWindow();
+    };
+  }, []);
 
   function getProfile(node) {
     if (!node?.path) return null;
@@ -111,7 +357,7 @@ export function useFileSystem(rootPath) {
     if (!node?.path) return null;
     const key = normalize(node.path);
     const existing = nodeProfiles[key];
-    if (existing) return existing;
+    if (existing) return normalizeProfile(existing, node);
 
     const fallback = buildDefaultProfile(node);
     setNodeProfiles((prev) => ({
@@ -140,21 +386,15 @@ export function useFileSystem(rootPath) {
       };
 
       next.path = key;
-      next.conceptId =
-        slugify(next.conceptId || base.conceptId) || base.conceptId;
-      next.conceptName = (
-        next.conceptName ||
-        base.conceptName ||
-        "Concept"
-      ).trim();
-      next.difficulty = Math.max(
-        0,
-        Math.min(1, Number(next.difficulty ?? base.difficulty)),
-      );
+      const normalizedProfile = normalizeProfile(next, {
+        path: key,
+        is_dir: next.kind !== "file",
+        name: key.split("/").filter(Boolean).pop() || "Concept",
+      });
 
       return {
         ...prev,
-        [key]: next,
+        [key]: normalizedProfile,
       };
     });
   }
@@ -173,7 +413,18 @@ export function useFileSystem(rootPath) {
           if (!next[key]) {
             next[key] = buildDefaultProfile(node);
             changed = true;
+          } else {
+            const normalizedExisting = normalizeProfile(next[key], node);
+            if (
+              normalizedExisting.conceptId !== next[key].conceptId ||
+              normalizedExisting.domainId !== next[key].domainId ||
+              normalizedExisting.domainName !== next[key].domainName
+            ) {
+              next[key] = normalizedExisting;
+              changed = true;
+            }
           }
+
           if (node.is_dir && Array.isArray(node.children)) {
             walk(node.children);
           }
@@ -197,7 +448,27 @@ export function useFileSystem(rootPath) {
     return parts.length > 1 ? parts.pop().toLowerCase() : "";
   }
 
-  async function trackOlmEvent(eventType, node, payload = {}) {
+  async function ensureInlineConceptCatalog(node, editorContent = "") {
+    if (!rootPath || !node || node.is_dir) return;
+
+    const profile =
+      getProfile(node) || ensureProfile(node) || buildDefaultProfile(node);
+    const inlineConcepts = extractInlineConcepts(
+      editorContent,
+      profile.domainId,
+    );
+
+    for (const concept of inlineConcepts) {
+      await upsertConcept(concept);
+    }
+  }
+
+  async function trackOlmEvent(
+    eventType,
+    node,
+    payload = {},
+    editorContent = "",
+  ) {
     if (!rootPath || !node || node.is_dir) return;
 
     const eventDate = new Date();
@@ -209,21 +480,75 @@ export function useFileSystem(rootPath) {
       name: profile.conceptName,
       description: `Conceito automático para ${profile.kind}: ${profile.path}`,
     };
+    const inlineConcepts = extractInlineConcepts(
+      editorContent,
+      profile.domainId,
+    );
+    const conceptIds = [
+      concept.id,
+      ...inlineConcepts.map((inlineConcept) => inlineConcept.id),
+    ];
+    const contentId = normalize(node.path);
 
     try {
       await upsertConcept(concept);
+      for (const inlineConcept of inlineConcepts) {
+        await upsertConcept(inlineConcept);
+      }
+      await upsertContentItem({
+        id: contentId,
+        item_type: "note",
+        title: node.name,
+      });
+      await mapContentConcept({
+        content_id: contentId,
+        concept_id: concept.id,
+        coverage_weight: 1.0,
+      });
 
       await ingestEvent({
         event_id: `evt-${eventDate.getTime()}-${Math.floor(Math.random() * 100000)}`,
         timestamp: eventDate.toISOString(),
         source: "editor",
         event_type: eventType,
-        content_id: null,
-        concept_ids: [concept.id],
+        content_id: contentId,
+        concept_ids: conceptIds,
         payload: {
           ...payload,
           difficulty: profile.difficulty,
+          file_path: contentId,
         },
+      });
+
+      updateAnalytics((current) => {
+        const nextMeta = [...(current.metaCognitiveProgress || [])];
+        const conf = Number(payload?.confidence);
+        if (Number.isFinite(conf)) {
+          nextMeta.push({
+            at: eventDate.toISOString(),
+            file: contentId,
+            domain: domainFromPath(contentId),
+            confidence: Math.max(0, Math.min(1, conf)),
+            eventType,
+          });
+          if (nextMeta.length > 500) {
+            nextMeta.splice(0, nextMeta.length - 500);
+          }
+        }
+
+        const completionByFile = { ...(current.completionByFile || {}) };
+        if (Number.isFinite(Number(payload?.completion_pct))) {
+          completionByFile[contentId] = Math.max(
+            0,
+            Math.min(1, Number(payload.completion_pct)),
+          );
+        }
+
+        return {
+          ...current,
+          completionByFile,
+          metaCognitiveProgress: nextMeta,
+        };
       });
     } catch (err) {
       console.warn("OLM auto-track skipped:", err);
@@ -233,7 +558,13 @@ export function useFileSystem(rootPath) {
   async function openFile(node) {
     setSelectedNode(node || null);
     ensureProfile(node);
-    if (node.is_dir) return;
+    if (node.is_dir) {
+      closeActiveFileTimer();
+      setSelectedFile(null);
+      setContent("");
+      setIsDirty(false);
+      return;
+    }
 
     const ext = getExt(node.name);
 
@@ -252,23 +583,49 @@ export function useFileSystem(rootPath) {
     setContent(text);
     setIsDirty(false);
 
-    await trackOlmEvent("study_read", node, {
-      duration_sec: 60,
-      target_duration_sec: 120,
-      confidence: 0.6,
+    await ensureInlineConceptCatalog(node, text);
+
+    const normalizedPath = normalize(node.path);
+    const domainName = domainFromPath(normalizedPath);
+    updateAnalytics((current) => {
+      const fileOpenCount = { ...(current.fileOpenCount || {}) };
+      const domainResourceOpenCount = {
+        ...(current.domainResourceOpenCount || {}),
+      };
+      fileOpenCount[normalizedPath] = (fileOpenCount[normalizedPath] || 0) + 1;
+      if (domainName) {
+        if (!domainResourceOpenCount[domainName]) {
+          domainResourceOpenCount[domainName] = {};
+        }
+        domainResourceOpenCount[domainName][normalizedPath] =
+          (domainResourceOpenCount[domainName][normalizedPath] || 0) + 1;
+      }
+
+      return {
+        ...current,
+        fileOpenCount,
+        domainResourceOpenCount,
+      };
     });
+    startActiveFileTimer(node);
+
+    await trackOlmEvent(
+      "review",
+      node,
+      {
+        duration_sec: 60,
+        target_duration_sec: 120,
+        confidence: 0.6,
+      },
+      text,
+    );
   }
 
   async function saveFile() {
     if (!selectedFile) return;
     await writeFile(rootPath, normalize(selectedFile.path), content);
+    await ensureInlineConceptCatalog(selectedFile, content);
     setIsDirty(false);
-
-    await trackOlmEvent("practice_attempt", selectedFile, {
-      correct: 1,
-      total: 1,
-      confidence: 0.7,
-    });
   }
 
   async function createMarkdown() {
@@ -292,6 +649,28 @@ export function useFileSystem(rootPath) {
     const relPath = basePath ? `${basePath}/${name}` : name;
 
     await createFile(rootPath, relPath);
+    await loadTree();
+  }
+
+  async function createFolderAtSelection(node = null) {
+    if (!rootPath) return;
+
+    const rawName = prompt("Nome da pasta:");
+    if (!rawName) return;
+
+    const folderName = rawName.trim();
+    if (!folderName) return;
+
+    const targetNode = node || selectedNode || selectedFile;
+    const basePath = targetNode?.is_dir
+      ? normalize(targetNode.path)
+      : normalize(targetNode?.path || "")
+          .split("/")
+          .slice(0, -1)
+          .join("/");
+
+    const relPath = basePath ? `${basePath}/${folderName}` : folderName;
+    await createFolder(rootPath, relPath);
     await loadTree();
   }
 
@@ -372,12 +751,83 @@ export function useFileSystem(rootPath) {
     await loadTree();
   }
 
+  async function renameNode(node) {
+    if (!node?.path) return;
+    const newName = prompt("Novo nome:", node.name);
+    if (!newName || !newName.trim()) return;
+
+    await renameFile(rootPath, normalize(node.path), newName.trim());
+    if (selectedFile?.path === node.path || selectedNode?.path === node.path) {
+      setSelectedFile(null);
+      setSelectedNode(null);
+      setContent("");
+      setIsDirty(false);
+    }
+    await loadTree();
+  }
+
+  async function deleteNode(node) {
+    if (!node?.path) return;
+    const ok = window.confirm(
+      `Eliminar ${node.name}? Esta ação é irreversível.`,
+    );
+    if (!ok) return;
+
+    await deletePath(rootPath, normalize(node.path));
+    if (selectedFile?.path === node.path || selectedNode?.path === node.path) {
+      clearSelection();
+    }
+    await loadTree();
+  }
+
+  async function handleNodeContextAction(node, action) {
+    if (!node || !action) return;
+
+    if (action === "new-file") {
+      if (node.is_dir) {
+        await createMarkdownInFolder(node);
+      } else {
+        const parent = normalize(node.path).split("/").slice(0, -1).join("/");
+        await createMarkdownInFolder({
+          ...node,
+          is_dir: true,
+          path: parent,
+          name: parent || "/",
+        });
+      }
+      return;
+    }
+
+    if (action === "new-folder") {
+      await createFolderAtSelection(node);
+      return;
+    }
+
+    if (action === "rename") {
+      await renameNode(node);
+      return;
+    }
+
+    if (action === "delete") {
+      await deleteNode(node);
+    }
+  }
+
+  function clearSelection() {
+    closeActiveFileTimer();
+    setSelectedNode(null);
+    setSelectedFile(null);
+    setContent("");
+    setIsDirty(false);
+  }
+
   return {
     // estado
     tree,
     selectedFile,
     selectedNode,
     nodeProfiles,
+    learningAnalytics,
     content,
     isDirty,
     fileType,
@@ -394,7 +844,12 @@ export function useFileSystem(rootPath) {
     getNodeProfile: getProfile,
     createMarkdown,
     createMarkdownInFolder,
+    createFolderAtSelection,
     createQuizTemplate,
     renameSelected,
+    renameNode,
+    deleteNode,
+    handleNodeContextAction,
+    clearSelection,
   };
 }

@@ -39,17 +39,22 @@ export function getExplain(conceptId, limit = 5) {
 export function nextToStudy(options = {}) {
   const {
     top = 10,
-    lambda = 0.7,
-    readinessThreshold = 0.6,
-    domainFilter = null,
-    exclude = null,
+    lambda,
+    readinessThreshold,
+    readiness_threshold,
+    domainFilter,
+    domain_filter,
+    exclude,
   } = options;
+
+  const threshold = readinessThreshold ?? readiness_threshold;
+  const domain = domainFilter ?? domain_filter;
 
   return call("olm_next_to_study", {
     top,
     lambda,
-    readinessThreshold,
-    domainFilter,
+    readiness_threshold: threshold,
+    domain_filter: domain,
     exclude,
   });
 }
@@ -83,6 +88,14 @@ export function loadOlmState(path = null) {
 }
 
 export function getDebugRanking(options = {}) {
-  const { top = null, domainFilter = null, exclude = null } = options;
-  return call("olm_get_debug_ranking", { top, domainFilter, exclude });
+  const { top = null, domainFilter = null, domain_filter = null, exclude = null } = options;
+  return call("olm_get_debug_ranking", {
+    top,
+    domain_filter: domainFilter ?? domain_filter,
+    exclude,
+  });
+}
+
+export function getContentMetrics(contentId = null) {
+  return call("olm_get_content_metrics", { content_id: contentId });
 }

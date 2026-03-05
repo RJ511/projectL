@@ -101,6 +101,29 @@ export function inlinePreview() {
           }
 
           //
+          // 3.1) CONCEITOS INLINE: ;;;Nome do conceito;;;
+          //
+          const conceptRe = /;;;\s*([^;\n][^;\n]{0,80}?)\s*;;;/g;
+          while ((m = conceptRe.exec(text))) {
+            const inner = m[1];
+            const whole = m[0];
+            const start = from + m.index;
+            const innerOffset = whole.indexOf(inner);
+            if (innerOffset < 0) continue;
+
+            const innerStart = start + innerOffset;
+            const innerEnd = innerStart + inner.length;
+            const end = start + whole.length;
+
+            const cursorInside = cursor >= innerStart && cursor <= innerEnd;
+            if (cursorInside) continue;
+
+            deco.push({ from: start, to: innerStart, cls: "cm-md-hide" });
+            deco.push({ from: innerEnd, to: end, cls: "cm-md-hide" });
+            deco.push({ from: innerStart, to: innerEnd, cls: "cm-md-concept" });
+          }
+
+          //
           // 4) LINKS: [texto](http...)
           //
           const linkRe = /\[([^\]\n]+)\]\((https?:\/\/[^)\s]+)\)/g;
@@ -276,7 +299,7 @@ export function inlinePreview() {
             // HR: --- ___ ***
             if (
               /^(\*\s*\*\s*\*|-+\s*-+\s*-+|_+\s*_+\s*_+)$/.test(
-                trimmedEnd.trim()
+                trimmedEnd.trim(),
               )
             ) {
               deco.push({ from: lineStart, to: lineEnd, cls: "cm-md-hr" });
@@ -443,8 +466,6 @@ export function inlinePreview() {
           });
         },
       },
-
-
-    }
+    },
   );
 }

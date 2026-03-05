@@ -8,6 +8,8 @@ import {
   resetOlmState,
 } from "../../services/olm.service";
 
+const OLM_CONFIG_BY_DOMAIN_KEY = "olmConfigByDomain.v1";
+
 const DEFAULT_OLM_CONFIG = {
   lambda: 0.7,
   gamma: 0.35,
@@ -34,6 +36,7 @@ export default function AppSettingsPanel({
   selectedNode,
   selectedNodeProfile,
   onSaveNodeProfile,
+  activeDomain,
 }) {
   const [olmConfig, setOlmConfigLocal] = useState(DEFAULT_OLM_CONFIG);
   const [olmMsg, setOlmMsg] = useState("");
@@ -43,15 +46,57 @@ export default function AppSettingsPanel({
   const [nodeDifficulty, setNodeDifficulty] = useState(0.5);
   const [nodeMsg, setNodeMsg] = useState("");
 
+  const [domainConfigMap, setDomainConfigMap] = useState({});
+
+  function domainConfigKey() {
+    const slug = (activeDomain || "")
+      .normalize("NFD")
+      .replace(/[\u0300-\u036f]/g, "")
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, "-")
+      .replace(/^-+|-+$/g, "");
+    return slug || "__root__";
+  }
+
+  function loadDomainConfigMap() {
+    try {
+      const raw = localStorage.getItem(OLM_CONFIG_BY_DOMAIN_KEY);
+      const parsed = raw ? JSON.parse(raw) : {};
+      return parsed && typeof parsed === "object" ? parsed : {};
+    } catch {
+      return {};
+    }
+  }
+
+  function persistDomainConfigMap(nextMap) {
+    setDomainConfigMap(nextMap);
+    localStorage.setItem(OLM_CONFIG_BY_DOMAIN_KEY, JSON.stringify(nextMap));
+  }
+
   useEffect(() => {
     if (!open) return;
+
+    const map = loadDomainConfigMap();
+    setDomainConfigMap(map);
+    const key = domainConfigKey();
+    const existing = map[key];
+
+    if (existing) {
+      setOlmConfigLocal(existing);
+      setExcludeInput((existing.exclude_concepts || []).join(", "));
+      setOlmConfig(existing).catch(() => {});
+      return;
+    }
+
     getOlmConfig()
       .then((cfg) => {
         setOlmConfigLocal(cfg);
         setExcludeInput((cfg.exclude_concepts || []).join(", "));
+        const nextMap = { ...map, [key]: cfg };
+        persistDomainConfigMap(nextMap);
       })
       .catch(() => {});
-  }, [open]);
+  }, [open, activeDomain]);
 
   useEffect(() => {
     if (!selectedNodeProfile) {
@@ -80,6 +125,11 @@ export default function AppSettingsPanel({
     };
     try {
       await setOlmConfig(parsed);
+      const key = domainConfigKey();
+      persistDomainConfigMap({
+        ...domainConfigMap,
+        [key]: parsed,
+      });
       setOlmMsg("Config guardada ✓");
     } catch (e) {
       setOlmMsg(`Erro: ${e}`);
@@ -323,11 +373,20 @@ export default function AppSettingsPanel({
             gap: 8,
           }}
         >
-          <strong style={{ fontSize: 12 }}>OLM — Parâmetros</strong>
+          <strong style={{ fontSize: 12 }}>
+            OLM — Como recomendar o próximo estudo
+          </strong>
+          <span style={{ fontSize: 11, color: "var(--text-muted, #888)" }}>
+            Escopo atual: {activeDomain || "Root (global)"}
+          </span>
+          <span style={{ fontSize: 11, color: "var(--text-muted, #888)" }}>
+            Ajusta estes controlos para tornar as recomendações mais
+            conservadoras ou mais agressivas.
+          </span>
 
           <div style={rowStyle}>
             <label style={fieldStyle}>
-              Lambda ({olmConfig.lambda.toFixed(2)})
+              Foco em lacunas de domínio ({olmConfig.lambda.toFixed(2)})
               <input
                 type="range"
                 min={0}
@@ -340,7 +399,8 @@ export default function AppSettingsPanel({
               />
             </label>
             <label style={fieldStyle}>
-              Gamma ({olmConfig.gamma.toFixed(2)})
+              Penalizar incerteza dos pré-requisitos (
+              {olmConfig.gamma.toFixed(2)})
               <input
                 type="range"
                 min={0}
@@ -356,7 +416,8 @@ export default function AppSettingsPanel({
 
           <div style={rowStyle}>
             <label style={fieldStyle}>
-              Theta ({olmConfig.theta.toFixed(2)})
+              Prontidão mínima para estar “pronto” ({olmConfig.theta.toFixed(2)}
+              )
               <input
                 type="range"
                 min={0}
@@ -369,7 +430,8 @@ export default function AppSettingsPanel({
               />
             </label>
             <label style={fieldStyle}>
-              Meta Strength ({olmConfig.meta_strength.toFixed(2)})
+              Peso de sinais metacognitivos (
+              {olmConfig.meta_strength.toFixed(2)})
               <input
                 type="range"
                 min={0}
@@ -385,7 +447,8 @@ export default function AppSettingsPanel({
 
           <div style={rowStyle}>
             <label style={fieldStyle}>
-              Soft Gate k ({olmConfig.soft_gate_k.toFixed(1)})
+              Dureza do gate para tópicos menos prontos (
+              {olmConfig.soft_gate_k.toFixed(1)})
               <input
                 type="range"
                 min={0.5}
@@ -398,7 +461,8 @@ export default function AppSettingsPanel({
               />
             </label>
             <label style={fieldStyle}>
-              Root Penalty ({olmConfig.root_penalty.toFixed(2)})
+              Reduzir prioridade de conceitos base (
+              {olmConfig.root_penalty.toFixed(2)})
               <input
                 type="range"
                 min={0}
@@ -446,7 +510,6 @@ export default function AppSettingsPanel({
               type="text"
               value={excludeInput}
               onChange={(e) => setExcludeInput(e.target.value)}
-              placeholder="Note Library Auto, ..."
               style={{ fontSize: 12 }}
             />
           </label>

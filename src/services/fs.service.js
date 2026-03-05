@@ -23,3 +23,7 @@ export function createFile(root, name) {
 export function renameFile(root, oldPath, newName) {
   return call("rename_file", { root, oldPath, newName });
 }
+
+export function deletePath(root, relPath) {
+  return call("delete_path", { root, relPath });
+}

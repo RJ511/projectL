@@ -3,6 +3,7 @@ import { ChevronLeft, ChevronRight, Sparkles, Target } from "lucide-react";
 import {
   addEdge,
   getExplain,
+  getContentMetrics,
   getOlmState,
   ingestEvent,
   listConcepts,
@@ -26,6 +27,7 @@ export default function OlmPanel({
   open = false,
   onToggle,
   onClose,
+  activeDomain = "",
   hideHandleWhenClosed = false,
 }) {
   const [conceptId, setConceptId] = useState("");
@@ -41,11 +43,21 @@ export default function OlmPanel({
   const [concepts, setConcepts] = useState([]);
   const [stateRows, setStateRows] = useState([]);
   const [recommendations, setRecommendations] = useState([]);
+  const [contentMetrics, setContentMetrics] = useState([]);
   const [selectedExplainId, setSelectedExplainId] = useState("");
   const [explainRows, setExplainRows] = useState([]);
   const [error, setError] = useState("");
   const drawerLeft = 48;
   const drawerWidth = 296;
+  const domainPrefix = useMemo(() => {
+    const slug = (activeDomain || "")
+      .normalize("NFD")
+      .replace(/[\u0300-\u036f]/g, "")
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, "-")
+      .replace(/^-+|-+$/g, "");
+    return slug ? `${slug}.` : null;
+  }, [activeDomain]);
 
   const summary = useMemo(() => {
     if (stateRows.length === 0) {
@@ -75,12 +87,31 @@ export default function OlmPanel({
       const [conceptList, stateList, nextList] = await Promise.all([
         listConcepts(),
         getOlmState(),
-        nextToStudy({ top: 5, lambda: 0.7, readinessThreshold: 0.5 }),
+        nextToStudy({
+          top: 5,
+          lambda: 0.7,
+          readinessThreshold: 0.5,
+          domainFilter: domainPrefix,
+        }),
       ]);
+      const metrics = await getContentMetrics();
 
-      setConcepts(conceptList);
-      setStateRows(stateList);
+      const filteredConcepts = domainPrefix
+        ? conceptList.filter((concept) => concept.id.startsWith(domainPrefix))
+        : conceptList;
+      const filteredState = domainPrefix
+        ? stateList.filter((row) => row.concept_id.startsWith(domainPrefix))
+        : stateList;
+      const filteredMetrics = domainPrefix
+        ? (metrics || []).filter((item) =>
+            String(item.content_id || "").startsWith(`${activeDomain}/`),
+          )
+        : metrics || [];
+
+      setConcepts(filteredConcepts);
+      setStateRows(filteredState);
       setRecommendations(nextList);
+      setContentMetrics(filteredMetrics);
     } catch (e) {
       setError(String(e));
     }
@@ -88,7 +119,7 @@ export default function OlmPanel({
 
   useEffect(() => {
     refresh();
-  }, []);
+  }, [domainPrefix]);
 
   async function onAddConcept(e) {
     e.preventDefault();
@@ -99,9 +130,15 @@ export default function OlmPanel({
       return;
     }
 
+    const rawId = conceptId.trim();
+    const scopedId =
+      domainPrefix && !rawId.startsWith(domainPrefix)
+        ? `${domainPrefix}${rawId}`
+        : rawId;
+
     try {
       await upsertConcept({
-        id: conceptId.trim(),
+        id: scopedId,
         name: conceptName.trim(),
         description: null,
       });
@@ -254,6 +291,9 @@ export default function OlmPanel({
           <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
             <Sparkles size={14} color="#2563eb" />
             <strong style={{ fontSize: 13 }}>OLM</strong>
+            <span style={{ fontSize: 10, color: "#64748b" }}>
+              {activeDomain ? `Domain: ${activeDomain}` : "All domains"}
+            </span>
           </div>
           <div style={{ display: "flex", gap: 6 }}>
             <button
@@ -391,6 +431,50 @@ export default function OlmPanel({
                   </div>
                 </button>
               ))
+            )}
+          </div>
+
+          <div
+            style={{
+              background: "#ffffff",
+              border: "1px solid #dbe5f4",
+              borderRadius: 10,
+              padding: 8,
+              display: "grid",
+              gap: 6,
+            }}
+          >
+            <strong style={{ fontSize: 12 }}>Item Metrics</strong>
+            {contentMetrics.length === 0 ? (
+              <div style={{ fontSize: 12, color: "#6b7280" }}>
+                Sem métricas de conteúdo ainda.
+              </div>
+            ) : (
+              [...contentMetrics]
+                .sort((a, b) => b.attempts - a.attempts)
+                .slice(0, 5)
+                .map((metric) => (
+                  <div
+                    key={metric.content_id}
+                    style={{
+                      padding: 7,
+                      borderRadius: 8,
+                      border: "1px solid #e2e8f0",
+                      background: "#f8fbff",
+                      display: "grid",
+                      gap: 2,
+                    }}
+                  >
+                    <div style={{ fontSize: 11, fontWeight: 600 }}>
+                      {metric.title || metric.content_id}
+                    </div>
+                    <div style={{ fontSize: 10, color: "#64748b" }}>
+                      tentativas: {metric.attempts} · sucesso:{" "}
+                      {(metric.success_rate * 100).toFixed(0)}% · score médio:{" "}
+                      {(metric.avg_score * 100).toFixed(0)}%
+                    </div>
+                  </div>
+                ))
             )}
           </div>
 
@@ -542,6 +626,8 @@ export default function OlmPanel({
                 <option value="quiz_attempt">quiz</option>
                 <option value="flashcard_review">flashcard</option>
                 <option value="study_read">read</option>
+                <option value="review">review (low)</option>
+                <option value="note_taking">note taking (low)</option>
                 <option value="self_assessment">self</option>
               </select>
               <select

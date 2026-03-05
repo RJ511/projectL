@@ -2,6 +2,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use rand::{Rng, SeedableRng};
 use rand::rngs::StdRng;
+use chrono::{DateTime, Utc};
 use std::cmp::Ordering;
 use std::collections::{HashMap, HashSet};
 use std::hash::{Hash, Hasher};
@@ -56,6 +57,7 @@ struct OlmStore {
     edges: Vec<ConceptEdge>,
     content_items: HashMap<String, ContentItem>,
     content_concepts: Vec<ContentConceptMap>,
+    study_events: Vec<StudyEvent>,
     concept_state: HashMap<String, ConceptState>,
     evidence: HashMap<String, Vec<EvidenceChunk>>,
     config: OlmConfig,
@@ -146,6 +148,17 @@ pub struct NextToStudyItem {
 #[derive(Debug, Clone, Serialize)]
 pub struct IngestResult {
     pub updated_concepts: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ContentMetric {
+    pub content_id: String,
+    pub title: Option<String>,
+    pub attempts: usize,
+    pub correct_sum: f64,
+    pub total_sum: f64,
+    pub success_rate: f64,
+    pub avg_score: f64,
 }
 
 #[derive(Debug, Clone)]
@@ -240,6 +253,8 @@ struct OlmSnapshot {
     edges: Vec<ConceptEdge>,
     content_items: HashMap<String, ContentItem>,
     content_concepts: Vec<ContentConceptMap>,
+    #[serde(default)]
+    study_events: Vec<StudyEvent>,
     concept_state: HashMap<String, ConceptState>,
     evidence: HashMap<String, Vec<EvidenceChunk>>,
     config: OlmConfig,
@@ -252,6 +267,7 @@ impl From<&OlmStore> for OlmSnapshot {
             edges: store.edges.clone(),
             content_items: store.content_items.clone(),
             content_concepts: store.content_concepts.clone(),
+            study_events: store.study_events.clone(),
             concept_state: store.concept_state.clone(),
             evidence: store.evidence.clone(),
             config: store.config.clone(),
@@ -309,6 +325,38 @@ fn uncertainty_with_formula(state: &ConceptState, formula: &str) -> f64 {
     }
 }
 
+fn decay_state_if_needed(state: &ConceptState, config: &OlmConfig) -> ConceptState {
+    if !config.decay_enabled {
+        return state.clone();
+    }
+
+    let half_life_days = config.decay_half_life_days.max(1.0);
+    let Some(last_update) = state.last_update.as_ref() else {
+        return state.clone();
+    };
+
+    let Ok(parsed_last) = DateTime::parse_from_rfc3339(last_update) else {
+        return state.clone();
+    };
+
+    let now = Utc::now();
+    let last_utc = parsed_last.with_timezone(&Utc);
+    let seconds_elapsed = now.signed_duration_since(last_utc).num_seconds();
+
+    if seconds_elapsed <= 0 {
+        return state.clone();
+    }
+
+    let days_elapsed = (seconds_elapsed as f64) / 86_400.0;
+    let decay_factor = 2f64.powf(-days_elapsed / half_life_days);
+
+    ConceptState {
+        alpha: 1.0 + ((state.alpha - 1.0).max(0.0) * decay_factor),
+        beta: 1.0 + ((state.beta - 1.0).max(0.0) * decay_factor),
+        last_update: state.last_update.clone(),
+    }
+}
+
 fn build_exclude_set(config_excludes: &[String], extra: Option<&[String]>) -> HashSet<String> {
     let mut set: HashSet<String> = config_excludes.iter().cloned().collect();
     if let Some(extra_list) = extra {
@@ -327,11 +375,12 @@ fn event_type_weight(event_type: &str) -> f64 {
         "practice_attempt" => 0.7,
         "flashcard_review" => 0.6,
         "study_read" => 0.2,
+        "review" => 0.12,
+        "note_taking" => 0.08,
         "self_assessment" => 0.3,
         _ => 0.2,
     }
 }
-
 fn event_score(event: &StudyEvent) -> f64 {
     match event.event_type.as_str() {
         "quiz_attempt" | "practice_attempt" => {
@@ -352,6 +401,24 @@ fn event_score(event: &StudyEvent) -> f64 {
                 clamp_01(duration / target) * 0.5
             }
         }
+        "review" => {
+            let duration = parse_payload_float(&event.payload, "duration_sec").unwrap_or(0.0);
+            let target = parse_payload_float(&event.payload, "target_duration_sec").unwrap_or(600.0);
+            if target <= 0.0 {
+                0.0
+            } else {
+                clamp_01(duration / target) * 0.35
+            }
+        }
+        "note_taking" => {
+            let chars_written = parse_payload_float(&event.payload, "chars_written").unwrap_or(0.0);
+            let target_chars = parse_payload_float(&event.payload, "target_chars").unwrap_or(300.0);
+            if target_chars <= 0.0 {
+                0.0
+            } else {
+                clamp_01(chars_written / target_chars) * 0.35
+            }
+        }
         "flashcard_review" => {
             if let Some(rating) = event.payload.get("rating").and_then(|v| v.as_str()) {
                 if rating.eq_ignore_ascii_case("again") {
@@ -369,6 +436,31 @@ fn event_score(event: &StudyEvent) -> f64 {
             .unwrap_or(0.5),
         _ => 0.5,
     }
+}
+
+fn limiter_for_event(event_type: &str, prior_evidence_count: usize) -> (f64, f64) {
+    let warmup_steps = match event_type {
+        "quiz_attempt" => 8.0,
+        "practice_attempt" => 10.0,
+        "flashcard_review" => 8.0,
+        "self_assessment" => 10.0,
+        "review" | "study_read" | "note_taking" => 14.0,
+        _ => 12.0,
+    };
+
+    let n = prior_evidence_count as f64;
+    let warmup_factor = ((n + 1.0) / warmup_steps).clamp(0.15, 1.0);
+
+    let hard_cap = match event_type {
+        "quiz_attempt" => 0.35,
+        "practice_attempt" => 0.25,
+        "flashcard_review" => 0.20,
+        "self_assessment" => 0.18,
+        "review" | "study_read" | "note_taking" => 0.10,
+        _ => 0.15,
+    };
+
+    (warmup_factor, hard_cap)
 }
 
 fn objective_score(event: &StudyEvent) -> Option<f64> {
@@ -474,6 +566,12 @@ fn ingest_into_store(
         return Err("Event must include concept_ids or a content_id mapped to concepts".to_string());
     }
 
+    store.study_events.push(event.clone());
+    if store.study_events.len() > 5000 {
+        let overflow = store.study_events.len() - 5000;
+        store.study_events.drain(0..overflow);
+    }
+
     let mut updated = HashSet::new();
 
     for (concept_id, mapping_weight) in mapped_concepts {
@@ -481,9 +579,22 @@ fn ingest_into_store(
             continue;
         }
 
-        let applied_weight = base_weight * mapping_weight * confidence * meta_weight;
-        let delta_alpha = applied_weight * score;
-        let delta_beta = applied_weight * (1.0 - score);
+        let prior_evidence_count = store
+            .evidence
+            .get(&concept_id)
+            .map(|rows| rows.len())
+            .unwrap_or(0);
+        let (warmup_factor, hard_cap) = limiter_for_event(&event.event_type, prior_evidence_count);
+
+        let mut applied_weight = base_weight * mapping_weight * confidence * meta_weight;
+        applied_weight *= warmup_factor;
+        applied_weight = applied_weight.min(hard_cap);
+
+        let conservative_score = 0.5 + ((score - 0.5) * 0.6);
+        let bounded_score = clamp_01(conservative_score);
+
+        let delta_alpha = applied_weight * bounded_score;
+        let delta_beta = applied_weight * (1.0 - bounded_score);
 
         let concept_state = ensure_state(store, &concept_id);
         concept_state.alpha += delta_alpha;
@@ -496,7 +607,7 @@ fn ingest_into_store(
             delta_alpha,
             delta_beta,
             event_type: event.event_type.clone(),
-            score,
+            score: bounded_score,
             applied_weight,
             metacognitive_weight: meta_weight,
             metacognitive_alignment: alignment,
@@ -567,7 +678,7 @@ fn rank_next_to_study(
 
     let mut state_by_id: HashMap<String, (f64, f64)> = HashMap::new();
     for concept in store.concepts.values() {
-        let concept_state = store
+        let raw_state = store
             .concept_state
             .get(&concept.id)
             .cloned()
@@ -576,6 +687,7 @@ fn rank_next_to_study(
                 beta: 1.0,
                 last_update: None,
             });
+        let concept_state = decay_state_if_needed(&raw_state, &store.config);
         state_by_id.insert(
             concept.id.clone(),
             (
@@ -1400,14 +1512,18 @@ pub fn olm_get_state(state: State<OlmState>) -> Result<Vec<ConceptStateView>, St
                     beta: 1.0,
                     last_update: None,
                 });
+            let effective_state = decay_state_if_needed(&concept_state, &store.config);
 
             ConceptStateView {
                 concept_id: concept.id.clone(),
                 name: concept.name.clone(),
-                mastery: mastery(&concept_state),
-                uncertainty: uncertainty(&concept_state),
-                alpha: concept_state.alpha,
-                beta: concept_state.beta,
+                mastery: mastery(&effective_state),
+                uncertainty: uncertainty_with_formula(
+                    &effective_state,
+                    &store.config.uncertainty_formula,
+                ),
+                alpha: effective_state.alpha,
+                beta: effective_state.beta,
                 last_update: concept_state.last_update,
             }
         })
@@ -1468,8 +1584,8 @@ pub fn olm_run_synthetic_scenarios_seeded(seed: u64) -> Result<SimulationReport,
     let train_split = ["S1", "S2", "S3"];
     let test_split = ["S4", "S5", "S6"];
 
-    // seed is stored in report metadata; scenario logic is deterministic across seeds.
-    // Use --seeds N to evaluate variance-related robustness in future extensions.
+    // Seed now perturbs scenario states (deterministic per seed/scenario), enabling
+    // reproducible variability across multi-seed simulation runs.
     let generated_at = format!("simulated-seed-{}", seed);
 
     let mut approach_reports = Vec::new();
@@ -1685,6 +1801,7 @@ pub fn olm_import_json(state: State<OlmState>, json: String) -> Result<(), Strin
     store.edges = snapshot.edges;
     store.content_items = snapshot.content_items;
     store.content_concepts = snapshot.content_concepts;
+    store.study_events = snapshot.study_events;
     store.concept_state = snapshot.concept_state;
     store.evidence = snapshot.evidence;
     store.config = snapshot.config;
@@ -1752,10 +1869,74 @@ pub fn olm_load_state(
     store.edges = snapshot.edges;
     store.content_items = snapshot.content_items;
     store.content_concepts = snapshot.content_concepts;
+    store.study_events = snapshot.study_events;
     store.concept_state = snapshot.concept_state;
     store.evidence = snapshot.evidence;
     store.config = snapshot.config;
     Ok(file_path.to_string_lossy().to_string())
+}
+
+#[tauri::command]
+pub fn olm_get_content_metrics(
+    state: State<OlmState>,
+    content_id: Option<String>,
+) -> Result<Vec<ContentMetric>, String> {
+    let store = state.inner.lock().map_err(|_| "State lock poisoned")?;
+    let mut acc: HashMap<String, (usize, f64, f64, f64)> = HashMap::new();
+
+    for event in &store.study_events {
+        let Some(cid) = event.content_id.as_ref() else {
+            continue;
+        };
+
+        if let Some(target) = content_id.as_ref() {
+            if cid != target {
+                continue;
+            }
+        }
+
+        let score = event_score(event);
+        let correct = parse_payload_float(&event.payload, "correct").unwrap_or(score);
+        let total = parse_payload_float(&event.payload, "total")
+            .unwrap_or(1.0)
+            .max(1.0);
+
+        let entry = acc.entry(cid.clone()).or_insert((0, 0.0, 0.0, 0.0));
+        entry.0 += 1;
+        entry.1 += correct;
+        entry.2 += total;
+        entry.3 += score;
+    }
+
+    let mut rows: Vec<ContentMetric> = acc
+        .into_iter()
+        .map(|(cid, (attempts, correct_sum, total_sum, score_sum))| {
+            let title = store.content_items.get(&cid).map(|item| item.title.clone());
+            let success_rate = if total_sum > 0.0 {
+                clamp_01(correct_sum / total_sum)
+            } else {
+                0.0
+            };
+            let avg_score = if attempts > 0 {
+                score_sum / attempts as f64
+            } else {
+                0.0
+            };
+
+            ContentMetric {
+                content_id: cid,
+                title,
+                attempts,
+                correct_sum,
+                total_sum,
+                success_rate,
+                avg_score,
+            }
+        })
+        .collect();
+
+    rows.sort_by(|a, b| a.content_id.cmp(&b.content_id));
+    Ok(rows)
 }
 
 // ── New command: debug ranking ────────────────────────────────────────────────

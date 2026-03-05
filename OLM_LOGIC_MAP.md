@@ -70,6 +70,8 @@ Implementado em `event_type_weight`:
 - `practice_attempt` = 0.7
 - `flashcard_review` = 0.6
 - `study_read` = 0.2
+- `review` = 0.12
+- `note_taking` = 0.08
 - `self_assessment` = 0.3
 - default = 0.2
 
@@ -87,13 +89,25 @@ Implementado em `event_score`.
 
 Leitura é explicitamente limitada para ter impacto mais fraco.
 
-### c) `flashcard_review`
+### c) `review`
+
+- $s = clamp(\dfrac{duration\_sec}{target\_duration\_sec}, 0, 1) \times 0.35$
+
+`review` é um sinal leve para revisão rápida.
+
+### d) `note_taking`
+
+- $s = clamp(\dfrac{chars\_written}{target\_chars}, 0, 1) \times 0.35$
+
+`note_taking` mede produção de notas com impacto deliberadamente baixo.
+
+### e) `flashcard_review`
 
 - se `rating == again` -> $s = 0$
 - caso contrário -> $s = 1$
 - sem rating -> $s = 0.5$
 
-### d) `self_assessment`
+### f) `self_assessment`
 
 - usa `payload.score` ou `payload.confidence`, com `clamp`.
 - fallback: $s = 0.5$
@@ -109,32 +123,57 @@ Implementado em `confidence_weight`:
 
 Para cada conceito afetado:
 
-- $w = w_{type} \cdot w_{mapping} \cdot w_{conf}$
+- peso base:
+
+$$
+w_{base}=w_{type} \cdot w_{mapping} \cdot w_{conf} \cdot w_{meta}
+$$
+
+- limitador de warmup (depende do número de evidências prévias do conceito):
+
+$$
+w_{warm}=clamp\left(\frac{n+1}{warmup\_steps(event\_type)},\ 0.15,\ 1.0\right)
+$$
+
+- hard cap por tipo de evento:
+
+$$
+w = min\left(w_{base}\cdot w_{warm},\ hard\_cap(event\_type)\right)
+$$
 
 Onde:
 
 - $w_{type}$: peso por tipo de evento
 - $w_{mapping}$: cobertura do conteúdo para esse conceito
 - $w_{conf}$: peso de confiança
+- $w_{meta}$: fator metacognitivo
+
+Caps atuais (`limiter_for_event`):
+
+- `quiz_attempt`: 0.35
+- `practice_attempt`: 0.25
+- `flashcard_review`: 0.20
+- `self_assessment`: 0.18
+- `review` / `study_read` / `note_taking`: 0.10
+- default: 0.15
 
 ## 4.6 Regra de update do estado
 
+Cada update gera um `EvidenceChunk` com:
+
+- `event_id`
 - $\Delta \alpha = w \cdot s$
 - $\Delta \beta = w \cdot (1 - s)$
 
 - $\alpha \leftarrow \alpha + \Delta\alpha$
 - $\beta \leftarrow \beta + \Delta\beta$
-
-Cada update gera um `EvidenceChunk` com:
-
-- `event_id`
 - `delta_alpha`, `delta_beta`
 - `event_type`
-- `score`
 - `applied_weight`
 - `created_at`
 
-Evidência por conceito é limitada aos últimos 200 registos.
+- `score`
+  Evidência por conceito é limitada aos últimos 200 registos.
 
 ## 5) Mapeamento evento -> conceito
 
@@ -217,20 +256,23 @@ A segmentação por domínio pode ser reforçada com:
 
 1. **Persistência**: guardar estado OLM em ficheiro/DB.
 2. **Domain-aware ranking**: endpoint para `next_to_study` por domínio.
-3. **Item metrics reais**: acertos/erros por ficheiro em vez de proxy por tamanho.
-4. **Decay temporal**: reduzir ligeiramente evidência antiga.
-5. **Qualidade de mapping**: aumentar uso de `content_concepts` para precisão.
+3. **Item metrics reais**: acertos/erros por ficheiro em vez de proxy por tamanho. ✅ Implementado via `olm_get_content_metrics`.
+4. **Decay temporal**: reduzir ligeiramente evidência antiga. ✅ Implementado no cálculo de estado efetivo quando `decay_enabled=true`.
+5. **Qualidade de mapping**: aumentar uso de `content_concepts` para precisão. ✅ Eventos automáticos do editor agora registam `content_id`, criam `content_item` e mapeiam `content_concept`.
 
 ## 10) Factos e limites atuais
 
 - Estado OLM é **persistido** em ficheiro JSON via `olm_save_state` / `olm_load_state` (atomic write com rename).
-- Eventos automáticos editor -> OLM estão ativos (`study_read` em abrir, `practice_attempt` em guardar).
+- Eventos automáticos editor -> OLM estão ativos com `review` ao abrir ficheiro (`openFile` em `useFileSystem.jsx`).
+- No fluxo atual, guardar ficheiro (`saveFile`) **não** injeta evento automático; ingestão adicional é feita via OLM Panel/API.
+- Eventos automáticos usam conceito por **perfil do nó** (ficheiro/pasta/domínio), com defaults e edição manual no Settings.
+- O conteúdo pode declarar conceitos inline com `;;;nome do conceito;;;` (compatível com `;;nome do conceito;;`), mapeados para IDs `<domínio>.inline.<slug>`.
 - Fórmulas já implementadas com defaults robustos (fallbacks para score, confidence e readiness).
 - Existe limite de 200 evidências por conceito para controlar crescimento.
 - `stop_mastery` e `exclude_concepts` permitem mitigar root-bias e excluir conceitos ruidosos.
 - `domain_filter` em `next_to_study` permite recomendações por domínio (prefixo de concept_id).
 - Uncertainty formula configurável: `standard` (1/N) ou `sqrt` (1/√N).
-- Decay temporal está disponível na config (`decay_enabled`) mas a computação efetiva está reservada para versão futura.
+- Decay temporal é aplicado ao estado efetivo (`alpha`/`beta`) usando semi-vida (`decay_half_life_days`) quando ativado.
 
 ## 11) Endpoints/comandos do OLM (Tauri)
 
@@ -253,6 +295,7 @@ A segmentação por domínio pode ser reforçada com:
 - `olm_save_state` / `olm_load_state` / `olm_reset_state` — persistência do estado
 - `olm_export_json` / `olm_import_json` — exportar/importar JSON completo
 - `olm_get_debug_ranking` — ranking completo com decomposição de score (debug)
+- `olm_get_content_metrics` — métricas por conteúdo (`attempts`, `success_rate`, `avg_score`)
 
 > Nota: as simulações sintéticas foram movidas para **CLI de teste** e não fazem parte da superfície final da app.
 
@@ -363,24 +406,24 @@ cargo run --bin olm_sim -- --seed-range 0 29 --out multi_results.json
 ```
 
 Multi-seed agrega métricas (pass_rate, hit@3, MRR, nDCG@3) por approach sobre N execuções.  
-As execuções atuais são determinísticas (seed=0 baseline); a variância por seed reflete a infraestrutura para futuras perturbações de payloads.
+As execuções usam seed para perturbar ligeiramente os estados dos cenários (de forma reproduzível por seed/cenário), permitindo variância real em multi-seed.
 
 ## 15) Config OLM (parâmetros persistidos)
 
-| Campo                  | Default      | Descrição                                                        |
-| ---------------------- | ------------ | ---------------------------------------------------------------- |
-| `lambda`               | 0.70         | Peso de mastery vs uncertainty no score                          |
-| `gamma`                | 0.35         | Intensidade de penalização por incerteza na readiness            |
-| `theta`                | 0.50         | Limiar de readiness para hard-gate                               |
-| `min_readiness`        | 0.10         | Readiness mínima para aparecer no ranking                        |
-| `soft_gate_k`          | 1.60         | Expoente do soft-gating (maior = mais restritivo)                |
-| `meta_strength`        | 0.60         | Intensidade da metacognição no peso do evento                    |
-| `root_penalty`         | 0.12         | Penalização de score para conceitos raiz (sem prereqs)           |
-| `stop_mastery`         | 0.85         | Mastery acima do qual conceitos raiz são excluídos do ranking    |
-| `exclude_concepts`     | `[]`         | Lista de concept_ids excluídos do `next_to_study`                |
-| `uncertainty_formula`  | `"standard"` | `"standard"` (1/N) ou `"sqrt"` (1/√N)                            |
-| `decay_enabled`        | `false`      | Ativar decay temporal (infraestrutura pronta, computação futura) |
-| `decay_half_life_days` | 30           | Semi-vida do decay em dias                                       |
+| Campo                  | Default      | Descrição                                                     |
+| ---------------------- | ------------ | ------------------------------------------------------------- |
+| `lambda`               | 0.70         | Peso de mastery vs uncertainty no score                       |
+| `gamma`                | 0.35         | Intensidade de penalização por incerteza na readiness         |
+| `theta`                | 0.50         | Limiar de readiness para hard-gate                            |
+| `min_readiness`        | 0.10         | Readiness mínima para aparecer no ranking                     |
+| `soft_gate_k`          | 1.60         | Expoente do soft-gating (maior = mais restritivo)             |
+| `meta_strength`        | 0.60         | Intensidade da metacognição no peso do evento                 |
+| `root_penalty`         | 0.12         | Penalização de score para conceitos raiz (sem prereqs)        |
+| `stop_mastery`         | 0.85         | Mastery acima do qual conceitos raiz são excluídos do ranking |
+| `exclude_concepts`     | `[]`         | Lista de concept_ids excluídos do `next_to_study`             |
+| `uncertainty_formula`  | `"standard"` | `"standard"` (1/N) ou `"sqrt"` (1/√N)                         |
+| `decay_enabled`        | `false`      | Ativar decay temporal no cálculo de estado efetivo            |
+| `decay_half_life_days` | 30           | Semi-vida do decay em dias                                    |
 
 ### Como interpretar stop_mastery
 
@@ -388,7 +431,7 @@ As execuções atuais são determinísticas (seed=0 baseline); a variância por 
 
 ### Como usar exclude_concepts
 
-Adicionar `"Note Library Auto"` ou outros conceitos gerados automaticamente ao `exclude_concepts` evita que poluam as recomendações. Continuam visíveis no `olm_get_state` e `olm_get_explain`.
+Adicionar concept IDs técnicos/auxiliares ao `exclude_concepts` evita que poluam as recomendações. Continuam visíveis no `olm_get_state` e `olm_get_explain`.
 
 ## 16) Persistência — como funciona
 
@@ -414,7 +457,6 @@ Visível no OLM Panel → "Debug Ranking" no frontend.
 
 ## 18) Limitações e próximos passos
 
-1. **Decay temporal**: infraestrutura criada (`decay_enabled`, `decay_half_life_days`), mas a computação efetiva de `alpha*decay_factor` / `beta*decay_factor` ao calcular mastery está reservada para versão futura (requer parsing de timestamps).
-2. **Item metrics reais**: `event_count` por conceito existe; métricas por ficheiro (acertos/erros, tempo de edição) são um próximo passo para `olm_next_to_study` baseado em content_id.
-3. **Domain-aware automático**: atualmente o `domain_filter` é passado explicitamente pelo frontend; uma inferência automática pela pasta ativa pode ser integrada em `Main.jsx`.
-4. **Testes de integração end-to-end**: smoke tests manuais documentados são o próximo passo (ver PROJECT_GUIDE.md).
+1. **Item-aware ranking**: métricas por `content_id` já existem, mas o ranking principal ainda é orientado por conceito.
+2. **Domain-aware automático**: atualmente o `domain_filter` é passado explicitamente pelo frontend; uma inferência automática pela pasta ativa pode ser integrada em `Main.jsx`.
+3. **Testes de integração end-to-end**: smoke tests manuais documentados são o próximo passo (ver PROJECT_GUIDE.md).

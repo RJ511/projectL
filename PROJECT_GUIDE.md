@@ -2,6 +2,12 @@
 
 Este ficheiro contém o fluxo completo: instalar, correr e usar a aplicação (editor + OLM).
 
+## 0) Documentação de contexto técnico
+
+Para implementação/manutenção com mapa de funções e ficheiros, consultar:
+
+- `IMPLEMENTATION_CONTEXT.md`
+
 ## 1) Pré-requisitos
 
 - Node.js 18+ (recomendado: LTS recente)
@@ -59,12 +65,13 @@ O painel **OLM** permite gerir o modelo de aprendizagem:
 
 Sem ação extra do utilizador:
 
-- Ao **abrir um ficheiro**, é registado um evento `study_read`.
-- Ao **guardar um ficheiro**, é registado um evento `practice_attempt`.
+- Ao **abrir um ficheiro**, é registado um evento `review`.
+- Ao **guardar um ficheiro**, não é injetado evento automático por omissão.
 
-Esses eventos são associados ao conceito automático:
+Os eventos automáticos usam o conceito do **perfil do nó** (ficheiro/pasta/domínio).
 
-- `note_library_auto` (criado automaticamente quando necessário).
+Também é possível declarar conceitos diretamente no conteúdo usando `;;;nome do conceito;;;`.
+Esses conceitos são normalizados para IDs namespaced por domínio e entram no fluxo OLM.
 
 ## 6) Validação rápida
 

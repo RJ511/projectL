@@ -10,6 +10,7 @@ import {
 export default function ToolBar({
   onOpenOlm,
   isOlmOpen = false,
+  canOpenOlm = true,
   onOpenPlanner,
   isPlannerOpen = false,
   onOpenSettings,
@@ -22,6 +23,7 @@ export default function ToolBar({
       label: "OLM",
       onClick: onOpenOlm,
       active: isOlmOpen,
+      disabled: !canOpenOlm,
     },
     { icon: <FolderOpen size={20} />, label: "Explorador" },
     {
@@ -65,20 +67,35 @@ export default function ToolBar({
           key={i}
           type="button"
           onClick={item.onClick}
+          disabled={item.disabled}
           style={{
             width: 34,
             height: 34,
             borderRadius: 10,
             border: "1px solid #dbe5f4",
-            background: item.active ? "#dbeafe" : "#f8fbff",
+            background: item.active
+              ? "#dbeafe"
+              : item.disabled
+                ? "#f1f5f9"
+                : "#f8fbff",
             boxShadow: "none",
             display: "flex",
             alignItems: "center",
             justifyContent: "center",
-            color: item.active ? "#1d4ed8" : "#334155",
+            color: item.active
+              ? "#1d4ed8"
+              : item.disabled
+                ? "#94a3b8"
+                : "#334155",
             padding: 0,
+            cursor: item.disabled ? "not-allowed" : "pointer",
+            opacity: item.disabled ? 0.8 : 1,
           }}
-          title={item.label}
+          title={
+            item.disabled
+              ? `${item.label} (apenas em Domain Level)`
+              : item.label
+          }
         >
           {item.icon}
         </button>
