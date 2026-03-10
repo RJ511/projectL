@@ -161,6 +161,17 @@ pub struct ContentMetric {
     pub avg_score: f64,
 }
 
+#[derive(Debug, Clone, Serialize)]
+pub struct NextContentToStudyItem {
+    pub content_id: String,
+    pub title: Option<String>,
+    pub score: f64,
+    pub attempts: usize,
+    pub avg_score: f64,
+    pub supporting_concepts: Vec<String>,
+    pub why: Vec<String>,
+}
+
 #[derive(Debug, Clone)]
 struct ApproachConfig {
     id: &'static str,
@@ -648,6 +659,121 @@ fn next_to_study_from_store(
         domain_filter,
         &config.uncertainty_formula,
     );
+    ranked
+}
+
+fn next_content_to_study_from_store(
+    store: &OlmStore,
+    top: Option<usize>,
+    lambda: f64,
+    readiness_threshold: f64,
+    exclude_set: &HashSet<String>,
+    concept_domain_filter: Option<&str>,
+    content_prefix: Option<&str>,
+) -> Vec<NextContentToStudyItem> {
+    let concept_rank = next_to_study_from_store(
+        store,
+        Some(100),
+        lambda,
+        readiness_threshold,
+        exclude_set,
+        concept_domain_filter,
+    );
+
+    if concept_rank.is_empty() {
+        return Vec::new();
+    }
+
+    let concept_score_by_id: HashMap<String, f64> = concept_rank
+        .iter()
+        .map(|row| (row.concept_id.clone(), row.score.max(0.0)))
+        .collect();
+
+    let concept_name_by_id: HashMap<String, String> = concept_rank
+        .iter()
+        .map(|row| (row.concept_id.clone(), row.name.clone()))
+        .collect();
+
+    let mut metric_acc: HashMap<String, (usize, f64)> = HashMap::new();
+    for event in &store.study_events {
+        let Some(cid) = event.content_id.as_ref() else {
+            continue;
+        };
+        let score = event_score(event);
+        let entry = metric_acc.entry(cid.clone()).or_insert((0, 0.0));
+        entry.0 += 1;
+        entry.1 += score;
+    }
+
+    let mut aggregated: HashMap<String, (f64, Vec<(String, f64)>)> = HashMap::new();
+    for map in &store.content_concepts {
+        if let Some(prefix) = content_prefix {
+            if !map.content_id.starts_with(prefix) {
+                continue;
+            }
+        }
+
+        let Some(concept_score) = concept_score_by_id.get(&map.concept_id).copied() else {
+            continue;
+        };
+
+        let contribution = concept_score * clamp_01(map.coverage_weight).max(0.05);
+        let entry = aggregated
+            .entry(map.content_id.clone())
+            .or_insert((0.0, Vec::new()));
+        entry.0 += contribution;
+        entry.1.push((map.concept_id.clone(), contribution));
+    }
+
+    let mut ranked: Vec<NextContentToStudyItem> = aggregated
+        .into_iter()
+        .map(|(content_id, (concept_signal, mut contributors))| {
+            contributors.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(Ordering::Equal));
+
+            let (attempts, score_sum) = metric_acc.get(&content_id).copied().unwrap_or((0, 0.0));
+            let avg_score = if attempts > 0 {
+                score_sum / attempts as f64
+            } else {
+                0.0
+            };
+            let need_factor = 0.7 + (0.3 * (1.0 - clamp_01(avg_score)));
+            let final_score = concept_signal * need_factor;
+
+            let supporting_concepts: Vec<String> = contributors
+                .iter()
+                .take(3)
+                .map(|(cid, _)| cid.clone())
+                .collect();
+
+            let readable_concepts: Vec<String> = supporting_concepts
+                .iter()
+                .map(|cid| concept_name_by_id.get(cid).cloned().unwrap_or_else(|| cid.clone()))
+                .collect();
+
+            let why = vec![
+                format!("Conceitos prioritários relacionados: {}", readable_concepts.join(", ")),
+                format!("Prioridade agregada por conceito: {:.3}", concept_signal),
+                format!("Histórico do item: avg_score={:.2}, attempts={}", avg_score, attempts),
+            ];
+
+            NextContentToStudyItem {
+                content_id: content_id.clone(),
+                title: store.content_items.get(&content_id).map(|item| item.title.clone()),
+                score: final_score,
+                attempts,
+                avg_score,
+                supporting_concepts,
+                why,
+            }
+        })
+        .collect();
+
+    ranked.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(Ordering::Equal));
+
+    if let Some(limit) = top {
+        ranked.truncate(limit);
+    }
+
     ranked
 }
 
@@ -1937,6 +2063,31 @@ pub fn olm_get_content_metrics(
 
     rows.sort_by(|a, b| a.content_id.cmp(&b.content_id));
     Ok(rows)
+}
+
+#[tauri::command]
+pub fn olm_next_content_to_study(
+    state: State<OlmState>,
+    top: Option<usize>,
+    lambda: Option<f64>,
+    readiness_threshold: Option<f64>,
+    domain_filter: Option<String>,
+    content_prefix: Option<String>,
+    exclude: Option<Vec<String>>,
+) -> Result<Vec<NextContentToStudyItem>, String> {
+    let store = state.inner.lock().map_err(|_| "State lock poisoned")?;
+    let config = &store.config;
+    let exclude_set = build_exclude_set(&config.exclude_concepts, exclude.as_deref());
+
+    Ok(next_content_to_study_from_store(
+        &store,
+        top,
+        lambda.unwrap_or(config.lambda),
+        readiness_threshold.unwrap_or(config.theta),
+        &exclude_set,
+        domain_filter.as_deref(),
+        content_prefix.as_deref(),
+    ))
 }
 
 // ── New command: debug ranking ────────────────────────────────────────────────

@@ -3,6 +3,8 @@ use std::fs;
 use std::path::PathBuf;
 use tauri::command;
 
+const HIDDEN_DATA_DIR: &str = ".projectl-data";
+
 #[derive(Serialize)]
 pub struct FileNode {
     pub name: String,
@@ -18,6 +20,9 @@ fn read_dir_recursive(path: &PathBuf, base: &PathBuf) -> Vec<FileNode> {
         for entry in entries.flatten() {
             let path = entry.path();
             let name = path.file_name().unwrap().to_string_lossy().to_string();
+            if name == HIDDEN_DATA_DIR {
+                continue;
+            }
             let is_dir = path.is_dir();
 
             let rel_path = path

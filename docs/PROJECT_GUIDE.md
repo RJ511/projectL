@@ -108,3 +108,20 @@ A implementação mantém o requisito pedido:
 - Backend: **Tauri (Rust)**
 - Frontend: **React + CodeMirror 6 (MirrorCode 6)**
 - Sem Django/FastAPI/serviços extra.
+
+## 9) Política de dados local (atualizada)
+
+Todos os dados locais da app passam a ser guardados dentro da pasta root do projeto, em:
+
+- `.projectl-data/app_state.json` (estado de UI, analytics, perfis, planos, configs de domínio)
+- `.projectl-data/olm_state.json` (estado completo do OLM)
+
+Comportamento esperado:
+
+- A pasta `.projectl-data` é **invisível no filetree da aplicação**.
+- Ao mover/copiar fisicamente a pasta root do projeto, os dados de uso e OLM acompanham automaticamente.
+
+Notas operacionais:
+
+- OLM save/load é feito com path explícito para `.projectl-data/olm_state.json`.
+- O estado de UI deixou de depender de `localStorage` e usa ficheiro no root.

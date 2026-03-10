@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
-import { getContentMetrics } from "../../services/olm.service";
+import { nextContentToStudy } from "../../services/olm.service";
+import { getRootStateValue } from "../../services/rootDataStore";
 
 const EMO_QUOTES = [
   "Small steps still move you forward.",
@@ -26,12 +27,22 @@ function normalizePath(value) {
   return String(value || "").replace(/\\/g, "/");
 }
 
+function slugify(value) {
+  return (value || "")
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "");
+}
+
 export default function KnowledgeLevels({
   tree,
   selectedFile,
   activeDomain,
   openDaysCount,
   level = "root",
+  rootPath,
   lastOpenedItem = null,
   learningAnalytics,
 }) {
@@ -112,43 +123,55 @@ export default function KnowledgeLevels({
     return `${minutes}m`;
   }
 
-  const domainConfigSaved = useMemo(() => {
-    if (!activeDomain) return false;
-    try {
-      const raw = localStorage.getItem("olmConfigByDomain.v1");
-      const parsed = raw ? JSON.parse(raw) : {};
+  const [domainConfigSavedFlag, setDomainConfigSavedFlag] = useState(false);
+
+  useEffect(() => {
+    let mounted = true;
+
+    async function loadDomainConfigFlag() {
+      if (!activeDomain || !rootPath) {
+        setDomainConfigSavedFlag(false);
+        return;
+      }
+
+      const rawMap = await getRootStateValue(
+        rootPath,
+        "olmConfigByDomain.v1",
+        {},
+      );
+      const parsed = rawMap && typeof rawMap === "object" ? rawMap : {};
       const slug = activeDomain
         .normalize("NFD")
         .replace(/[\u0300-\u036f]/g, "")
         .toLowerCase()
         .replace(/[^a-z0-9]+/g, "-")
         .replace(/^-+|-+$/g, "");
-      return Boolean(parsed?.[slug]);
-    } catch {
-      return false;
+      if (!mounted) return;
+      setDomainConfigSavedFlag(Boolean(parsed?.[slug]));
     }
-  }, [activeDomain]);
+
+    loadDomainConfigFlag();
+    return () => {
+      mounted = false;
+    };
+  }, [activeDomain, rootPath]);
 
   useEffect(() => {
     let mounted = true;
 
     async function loadSuggestion() {
       try {
-        const allMetrics = await getContentMetrics();
+        const conceptDomainPrefix = activeDomainLabel
+          ? `${slugify(activeDomainLabel)}.`
+          : null;
         const domainPathPrefix = activeDomainLabel
           ? `${activeDomainLabel}/`
-          : "";
+          : null;
 
-        const itemRows = (allMetrics || []).filter((row) => {
-          if (!row?.content_id) return false;
-          if (!domainPathPrefix) return true;
-          return normalizePath(row.content_id).startsWith(domainPathPrefix);
-        });
-
-        const ranked = [...itemRows].sort((a, b) => {
-          const scoreDiff = Number(a.avg_score || 0) - Number(b.avg_score || 0);
-          if (scoreDiff !== 0) return scoreDiff;
-          return Number(b.attempts || 0) - Number(a.attempts || 0);
+        const ranked = await nextContentToStudy({
+          top: 5,
+          domainFilter: conceptDomainPrefix,
+          contentPrefix: domainPathPrefix,
         });
 
         const topItem = ranked[0];
@@ -245,7 +268,8 @@ export default function KnowledgeLevels({
           </div>
           <div>Tempo no último ficheiro: {formatDuration(fileTimeSec)}</div>
           <div>
-            Config OLM do domínio: {domainConfigSaved ? "Guardada" : "Default"}
+            Config OLM do domínio:{" "}
+            {domainConfigSavedFlag ? "Guardada" : "Default"}
           </div>
           <div>
             Recurso mais usado:{" "}

@@ -7,6 +7,11 @@ import {
   loadOlmState,
   resetOlmState,
 } from "../../services/olm.service";
+import {
+  getRootStateValue,
+  setRootStateValue,
+} from "../../services/rootDataStore";
+import { toRootOlmAbsolutePath } from "../../services/dataPolicy";
 
 const OLM_CONFIG_BY_DOMAIN_KEY = "olmConfigByDomain.v1";
 
@@ -37,6 +42,7 @@ export default function AppSettingsPanel({
   selectedNodeProfile,
   onSaveNodeProfile,
   activeDomain,
+  rootPath,
 }) {
   const [olmConfig, setOlmConfigLocal] = useState(DEFAULT_OLM_CONFIG);
   const [olmMsg, setOlmMsg] = useState("");
@@ -58,45 +64,52 @@ export default function AppSettingsPanel({
     return slug || "__root__";
   }
 
-  function loadDomainConfigMap() {
-    try {
-      const raw = localStorage.getItem(OLM_CONFIG_BY_DOMAIN_KEY);
-      const parsed = raw ? JSON.parse(raw) : {};
-      return parsed && typeof parsed === "object" ? parsed : {};
-    } catch {
-      return {};
-    }
-  }
-
   function persistDomainConfigMap(nextMap) {
     setDomainConfigMap(nextMap);
-    localStorage.setItem(OLM_CONFIG_BY_DOMAIN_KEY, JSON.stringify(nextMap));
+    if (rootPath) {
+      setRootStateValue(rootPath, OLM_CONFIG_BY_DOMAIN_KEY, nextMap).catch(
+        () => {},
+      );
+    }
   }
 
   useEffect(() => {
     if (!open) return;
 
-    const map = loadDomainConfigMap();
-    setDomainConfigMap(map);
-    const key = domainConfigKey();
-    const existing = map[key];
+    let mounted = true;
 
-    if (existing) {
-      setOlmConfigLocal(existing);
-      setExcludeInput((existing.exclude_concepts || []).join(", "));
-      setOlmConfig(existing).catch(() => {});
-      return;
+    async function loadConfig() {
+      const map =
+        (await getRootStateValue(rootPath, OLM_CONFIG_BY_DOMAIN_KEY, {})) || {};
+      if (!mounted) return;
+      setDomainConfigMap(map && typeof map === "object" ? map : {});
+
+      const key = domainConfigKey();
+      const existing = map?.[key];
+
+      if (existing) {
+        setOlmConfigLocal(existing);
+        setExcludeInput((existing.exclude_concepts || []).join(", "));
+        setOlmConfig(existing).catch(() => {});
+        return;
+      }
+
+      getOlmConfig()
+        .then((cfg) => {
+          if (!mounted) return;
+          setOlmConfigLocal(cfg);
+          setExcludeInput((cfg.exclude_concepts || []).join(", "));
+          const nextMap = { ...map, [key]: cfg };
+          persistDomainConfigMap(nextMap);
+        })
+        .catch(() => {});
     }
 
-    getOlmConfig()
-      .then((cfg) => {
-        setOlmConfigLocal(cfg);
-        setExcludeInput((cfg.exclude_concepts || []).join(", "));
-        const nextMap = { ...map, [key]: cfg };
-        persistDomainConfigMap(nextMap);
-      })
-      .catch(() => {});
-  }, [open, activeDomain]);
+    loadConfig();
+    return () => {
+      mounted = false;
+    };
+  }, [open, activeDomain, rootPath]);
 
   useEffect(() => {
     if (!selectedNodeProfile) {
@@ -139,7 +152,7 @@ export default function AppSettingsPanel({
 
   async function handleSaveState() {
     try {
-      const path = await saveOlmState();
+      const path = await saveOlmState(toRootOlmAbsolutePath(rootPath));
       setOlmMsg(`Estado guardado em ${path}`);
     } catch (e) {
       setOlmMsg(`Erro ao guardar: ${e}`);
@@ -149,7 +162,7 @@ export default function AppSettingsPanel({
 
   async function handleLoadState() {
     try {
-      const path = await loadOlmState();
+      const path = await loadOlmState(toRootOlmAbsolutePath(rootPath));
       setOlmMsg(`Estado carregado de ${path}`);
     } catch (e) {
       setOlmMsg(`Erro ao carregar: ${e}`);

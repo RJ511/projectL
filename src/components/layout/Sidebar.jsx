@@ -42,7 +42,6 @@ export default function Sidebar({
       </div>
       <button
         onClick={() => {
-          localStorage.removeItem("lastRootPath");
           chooseDirectory();
         }}
         style={{ padding: "7px 8px", boxShadow: "none" }}

@@ -15,10 +15,22 @@ import {
   upsertContentItem,
 } from "../services/olm.service";
 import { normalize } from "../services/pathTools";
+import {
+  getRootStateValue,
+  setRootStateValue,
+} from "../services/rootDataStore";
 
 const NODE_LEARNING_PROFILES_KEY = "nodeLearningProfiles.v1";
 const LEARNING_ANALYTICS_KEY = "learningAnalytics.v1";
 const INLINE_CONCEPT_REGEX = /(;{2,3})\s*([^;\n][^;\n]{0,80}?)\s*\1/g;
+const META_MIN_SESSION_SEC = 12 * 60;
+const META_COOLDOWN_MS = 5 * 60 * 1000;
+const META_QUESTIONS = [
+  "Como te sentiste nesta fase de estudo? (1=muito mal/dificil, 4=muito bem/facil)",
+  "Sentes que aprendeste algo util agora? (1=quase nada, 4=aprendi muito)",
+  "Quao facil foi manter foco e clareza? (1=muito dificil, 4=muito facil)",
+  "Como avaliarias o teu progresso neste momento? (1=fraco, 4=forte)",
+];
 
 function slugify(value) {
   return (value || "")
@@ -63,6 +75,17 @@ function domainFromPath(path) {
   const rel = normalize(path || "");
   const [first] = rel.split("/").filter(Boolean);
   return first || "";
+}
+
+function isQuizLikePath(path) {
+  const normalized = normalize(path || "").toLowerCase();
+  const fileName = normalized.split("/").pop() || "";
+  return (
+    fileName.startsWith("quiz-") ||
+    fileName.startsWith("teste-") ||
+    fileName.includes("quiz") ||
+    fileName.includes("teste")
+  );
 }
 
 function normalizeConceptId(rawConceptId, domainId) {
@@ -230,39 +253,199 @@ export function useFileSystem(rootPath) {
   const [tree, setTree] = useState([]);
   const [selectedFile, setSelectedFile] = useState(null);
   const [selectedNode, setSelectedNode] = useState(null);
-  const [nodeProfiles, setNodeProfiles] = useState(() => {
-    const saved = localStorage.getItem(NODE_LEARNING_PROFILES_KEY);
-    const parsed = safeParseJson(saved, {});
-    return parsed && typeof parsed === "object" ? parsed : {};
-  });
+  const [nodeProfiles, setNodeProfiles] = useState({});
   const [content, setContent] = useState("");
   const [isDirty, setIsDirty] = useState(false);
   const [fileType, setFileType] = useState("text");
-  const [learningAnalytics, setLearningAnalytics] = useState(() =>
-    safeAnalytics(localStorage.getItem(LEARNING_ANALYTICS_KEY)),
-  );
+  const [learningAnalytics, setLearningAnalytics] =
+    useState(defaultAnalytics());
   const sessionStartRef = useRef(Date.now());
   const activeFileRef = useRef({ path: null, domain: null, startedAt: 0 });
+  const sessionMetaPromptedRef = useRef(false);
+  const lastMetaPromptAtRef = useRef(0);
+  const questionCursorRef = useRef(0);
 
   useEffect(() => {
-    localStorage.setItem(
+    let mounted = true;
+
+    async function loadRootState() {
+      if (!rootPath) {
+        setNodeProfiles({});
+        setLearningAnalytics(defaultAnalytics());
+        return;
+      }
+
+      const [profilesRaw, analyticsRaw] = await Promise.all([
+        getRootStateValue(rootPath, NODE_LEARNING_PROFILES_KEY, {}),
+        getRootStateValue(rootPath, LEARNING_ANALYTICS_KEY, defaultAnalytics()),
+      ]);
+
+      if (!mounted) return;
+      setNodeProfiles(
+        profilesRaw && typeof profilesRaw === "object" ? profilesRaw : {},
+      );
+      setLearningAnalytics(
+        analyticsRaw && typeof analyticsRaw === "object"
+          ? safeAnalytics(JSON.stringify(analyticsRaw))
+          : defaultAnalytics(),
+      );
+    }
+
+    loadRootState();
+    return () => {
+      mounted = false;
+    };
+  }, [rootPath]);
+
+  useEffect(() => {
+    if (!rootPath) return;
+    setRootStateValue(
+      rootPath,
       NODE_LEARNING_PROFILES_KEY,
-      JSON.stringify(nodeProfiles || {}),
-    );
-  }, [nodeProfiles]);
+      nodeProfiles || {},
+    ).catch(() => {});
+  }, [nodeProfiles, rootPath]);
 
   useEffect(() => {
-    localStorage.setItem(
+    if (!rootPath) return;
+    setRootStateValue(
+      rootPath,
       LEARNING_ANALYTICS_KEY,
-      JSON.stringify(learningAnalytics || defaultAnalytics()),
-    );
-  }, [learningAnalytics]);
+      learningAnalytics || defaultAnalytics(),
+    ).catch(() => {});
+  }, [learningAnalytics, rootPath]);
 
   function updateAnalytics(mutator) {
     setLearningAnalytics((prev) => {
       const base = prev || defaultAnalytics();
       const next = mutator({ ...base }) || base;
       return next;
+    });
+  }
+
+  function buildMetaPromptLabel(trigger) {
+    if (trigger === "domain_switch") return "Mudanca de dominio";
+    if (trigger === "test_end") return "Fim de teste/quiz";
+    return "Check-in periodico";
+  }
+
+  function parseMetaAnswer(rawAnswer) {
+    const value = Number(rawAnswer);
+    if (!Number.isInteger(value) || value < 1 || value > 4) {
+      return null;
+    }
+    return value;
+  }
+
+  async function askMetaReflection({
+    trigger,
+    domain = "",
+    contentId = "",
+    force = false,
+  } = {}) {
+    if (!rootPath) return null;
+    const now = Date.now();
+    if (!force && now - lastMetaPromptAtRef.current < META_COOLDOWN_MS) {
+      return null;
+    }
+
+    const question =
+      META_QUESTIONS[questionCursorRef.current % META_QUESTIONS.length];
+    questionCursorRef.current += 1;
+
+    const scope = domain ? `Dominio: ${domain}` : "Dominio: geral";
+    const triggerLabel = buildMetaPromptLabel(trigger);
+    const response = window.prompt(
+      `[Meta] ${triggerLabel}\n${scope}\n\n${question}\n\nResponde apenas com 1, 2, 3 ou 4.`,
+      "3",
+    );
+
+    if (response == null) return null;
+
+    const rating = parseMetaAnswer(response.trim());
+    if (!rating) {
+      alert("Resposta invalida. Usa um numero inteiro de 1 a 4.");
+      return null;
+    }
+
+    const eventDate = new Date();
+    const safeDomain = slugify(domain || "root") || "root";
+    const conceptId = `${safeDomain}.meta.reflection`;
+    const effectiveContentId = contentId || `_meta/${safeDomain}/reflection`;
+    const score01 = (rating - 1) / 3;
+
+    try {
+      await upsertConcept({
+        id: conceptId,
+        name: `${domain || "Root"} Meta Reflection`,
+        description:
+          "Conceito sintetico para registar autoavaliacoes metacognitivas 1-4.",
+      });
+      await upsertContentItem({
+        id: effectiveContentId,
+        item_type: "reflection",
+        title: `Meta reflection: ${domain || "root"}`,
+      });
+      await mapContentConcept({
+        content_id: effectiveContentId,
+        concept_id: conceptId,
+        coverage_weight: 1.0,
+      });
+
+      await ingestEvent({
+        event_id: `meta-${eventDate.getTime()}-${Math.floor(Math.random() * 100000)}`,
+        timestamp: eventDate.toISOString(),
+        source: "meta_prompt",
+        event_type: "self_assessment",
+        content_id: effectiveContentId,
+        concept_ids: [conceptId],
+        payload: {
+          score: score01,
+          confidence: Math.max(0.25, Math.min(1, rating / 4)),
+          meta_reflection_rating: rating,
+          meta_trigger: trigger || "periodic",
+          file_path: effectiveContentId,
+        },
+      });
+
+      updateAnalytics((current) => {
+        const nextMeta = [...(current.metaCognitiveProgress || [])];
+        nextMeta.push({
+          at: eventDate.toISOString(),
+          domain: domain || "",
+          file: effectiveContentId,
+          eventType: "self_assessment",
+          trigger: trigger || "periodic",
+          rating,
+          confidence: Math.max(0.25, Math.min(1, rating / 4)),
+        });
+
+        if (nextMeta.length > 500) {
+          nextMeta.splice(0, nextMeta.length - 500);
+        }
+
+        return {
+          ...current,
+          metaCognitiveProgress: nextMeta,
+        };
+      });
+
+      lastMetaPromptAtRef.current = Date.now();
+      return rating;
+    } catch (err) {
+      console.warn("Meta reflection ingest skipped:", err);
+      return null;
+    }
+  }
+
+  async function requestDomainTransitionFeedback(fromDomain, toDomain) {
+    const from = String(fromDomain || "").trim();
+    const to = String(toDomain || "").trim();
+    if (!from || from === to) return;
+    await askMetaReflection({
+      trigger: "domain_switch",
+      domain: from,
+      force: true,
     });
   }
 
@@ -332,7 +515,26 @@ export function useFileSystem(rootPath) {
       };
     });
 
+    if (
+      durationSec >= META_MIN_SESSION_SEC &&
+      !sessionMetaPromptedRef.current
+    ) {
+      const domainHint =
+        activeFileRef.current?.domain ||
+        selectedFile?.path?.split(/[\\/]/)?.[0] ||
+        "";
+      askMetaReflection({
+        trigger: "periodic",
+        domain: domainHint,
+      }).then((rating) => {
+        if (rating != null) {
+          sessionMetaPromptedRef.current = true;
+        }
+      });
+    }
+
     sessionStartRef.current = Date.now();
+    sessionMetaPromptedRef.current = false;
   }
 
   useEffect(() => {
@@ -346,6 +548,37 @@ export function useFileSystem(rootPath) {
       closeSessionWindow();
     };
   }, []);
+
+  useEffect(() => {
+    const intervalId = window.setInterval(() => {
+      if (document.hidden) return;
+      if (sessionMetaPromptedRef.current) return;
+
+      const elapsedSec = Math.max(
+        0,
+        Math.round((Date.now() - sessionStartRef.current) / 1000),
+      );
+      if (elapsedSec < META_MIN_SESSION_SEC) return;
+
+      const domainHint =
+        activeFileRef.current?.domain ||
+        selectedFile?.path?.split(/[\\/]/)?.[0] ||
+        "";
+
+      askMetaReflection({
+        trigger: "periodic",
+        domain: domainHint,
+      }).then((rating) => {
+        if (rating != null) {
+          sessionMetaPromptedRef.current = true;
+        }
+      });
+    }, 60000);
+
+    return () => {
+      window.clearInterval(intervalId);
+    };
+  }, [selectedFile, rootPath]);
 
   function getProfile(node) {
     if (!node?.path) return null;
@@ -626,6 +859,14 @@ export function useFileSystem(rootPath) {
     await writeFile(rootPath, normalize(selectedFile.path), content);
     await ensureInlineConceptCatalog(selectedFile, content);
     setIsDirty(false);
+
+    if (isQuizLikePath(selectedFile.path)) {
+      await askMetaReflection({
+        trigger: "test_end",
+        domain: domainFromPath(selectedFile.path),
+        contentId: normalize(selectedFile.path),
+      });
+    }
   }
 
   async function createMarkdown() {
@@ -851,5 +1092,7 @@ export function useFileSystem(rootPath) {
     deleteNode,
     handleNodeContextAction,
     clearSelection,
+    askMetaReflection,
+    requestDomainTransitionFeedback,
   };
 }

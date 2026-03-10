@@ -12,11 +12,17 @@ import { useAppSettings } from "../hooks/useAppSettings";
 import { createFolder } from "../services/fs.service";
 import { loadOlmState, saveOlmState } from "../services/olm.service";
 import { normalize } from "../services/pathTools";
+import {
+  getRootStateValue,
+  setRootStateValue,
+} from "../services/rootDataStore";
+import { toRootOlmAbsolutePath } from "../services/dataPolicy";
 import { open } from "@tauri-apps/plugin-dialog";
 
 const ONBOARDING_KEY = "appOnboardingDone";
 const OPEN_DAYS_KEY = "appOpenDays";
 const LAST_OPENED_BY_DOMAIN_KEY = "lastOpenedByDomain.v1";
+const LAST_USED_ROOT_KEY = "projectL.lastUsedRootPath";
 
 function joinPath(base, segment) {
   if (!base) return segment;
@@ -29,63 +35,88 @@ function getTopSegment(path) {
   return first || "";
 }
 
-function recordOpenDay() {
-  const day = new Date().toISOString().slice(0, 10);
-  const existing = JSON.parse(localStorage.getItem(OPEN_DAYS_KEY) || "[]");
-  if (!existing.includes(day)) {
-    const next = [...existing, day];
-    localStorage.setItem(OPEN_DAYS_KEY, JSON.stringify(next));
-    return next.length;
-  }
-  return existing.length;
-}
-
 export default function Main() {
   const [rootPath, setRootPath] = useState("");
   const [isOlmOpen, setIsOlmOpen] = useState(false);
   const [isPlannerOpen, setIsPlannerOpen] = useState(false);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
-  const [onboardingDone, setOnboardingDone] = useState(
-    localStorage.getItem(ONBOARDING_KEY) === "true",
-  );
+  const [onboardingDone, setOnboardingDone] = useState(false);
   const [treeViewMode, setTreeViewMode] = useState("root");
   const [activeDomain, setActiveDomain] = useState("");
   const [tutorialDomainName, setTutorialDomainName] = useState("");
   const [busy, setBusy] = useState(false);
   const [onboardingError, setOnboardingError] = useState("");
+  const [rootResolved, setRootResolved] = useState(false);
   const [openDaysCount, setOpenDaysCount] = useState(0);
-  const [lastOpenedByDomain, setLastOpenedByDomain] = useState(() => {
-    try {
-      const raw = localStorage.getItem(LAST_OPENED_BY_DOMAIN_KEY);
-      const parsed = raw ? JSON.parse(raw) : {};
-      return parsed && typeof parsed === "object" ? parsed : {};
-    } catch {
-      return {};
-    }
-  });
+  const [lastOpenedByDomain, setLastOpenedByDomain] = useState({});
   const {
     settings,
     setTheme,
     setFontSize,
     setLineHeight,
     reset: resetSettings,
-  } = useAppSettings();
+  } = useAppSettings(rootPath);
 
   useEffect(() => {
-    const saved = localStorage.getItem("lastRootPath");
-    if (saved) {
-      setRootPath(saved);
+    // Bootstrap with last used root so onboarding only appears on first run.
+    const savedRoot = localStorage.getItem(LAST_USED_ROOT_KEY) || "";
+    if (savedRoot) {
+      setRootPath(savedRoot);
     }
-    setOpenDaysCount(recordOpenDay());
+    setRootResolved(true);
   }, []);
 
   useEffect(() => {
-    loadOlmState().catch(() => {});
-  }, []);
+    let mounted = true;
+
+    async function loadRootUiState() {
+      if (!rootPath) {
+        setOnboardingDone(false);
+        setOpenDaysCount(0);
+        setLastOpenedByDomain({});
+        return;
+      }
+
+      const [onboardingRaw, openDaysRaw, lastOpenedRaw] = await Promise.all([
+        getRootStateValue(rootPath, ONBOARDING_KEY, false),
+        getRootStateValue(rootPath, OPEN_DAYS_KEY, []),
+        getRootStateValue(rootPath, LAST_OPENED_BY_DOMAIN_KEY, {}),
+      ]);
+
+      if (!mounted) return;
+
+      const day = new Date().toISOString().slice(0, 10);
+      const existingDays = Array.isArray(openDaysRaw) ? openDaysRaw : [];
+      const nextDays = existingDays.includes(day)
+        ? existingDays
+        : [...existingDays, day];
+
+      setOnboardingDone(Boolean(onboardingRaw));
+      setOpenDaysCount(nextDays.length);
+      setLastOpenedByDomain(
+        lastOpenedRaw && typeof lastOpenedRaw === "object" ? lastOpenedRaw : {},
+      );
+
+      if (!existingDays.includes(day)) {
+        setRootStateValue(rootPath, OPEN_DAYS_KEY, nextDays).catch(() => {});
+      }
+    }
+
+    loadRootUiState();
+    return () => {
+      mounted = false;
+    };
+  }, [rootPath]);
+
+  useEffect(() => {
+    if (!rootPath) return;
+    loadOlmState(toRootOlmAbsolutePath(rootPath)).catch(() => {});
+  }, [rootPath]);
 
   useEffect(() => {
     const autoSave = () => {
-      saveOlmState().catch(() => {});
+      if (!rootPath) return;
+      saveOlmState(toRootOlmAbsolutePath(rootPath)).catch(() => {});
     };
 
     const intervalId = window.setInterval(autoSave, 60000);
@@ -96,7 +127,7 @@ export default function Main() {
       window.removeEventListener("beforeunload", autoSave);
       autoSave();
     };
-  }, []);
+  }, [rootPath]);
 
   const {
     tree,
@@ -118,6 +149,7 @@ export default function Main() {
     createQuizTemplate,
     renameSelected,
     clearSelection,
+    requestDomainTransitionFeedback,
   } = useFileSystem(rootPath);
 
   const selectedNodeProfile = useMemo(
@@ -176,21 +208,31 @@ export default function Main() {
     const domain = getTopSegment(selectedFile.path);
     if (!domain) return;
 
-    const next = {
-      ...lastOpenedByDomain,
-      [domain]: {
-        path: normalize(selectedFile.path),
-        name: selectedFile.name,
-        openedAt: new Date().toISOString(),
-      },
-    };
+    setLastOpenedByDomain((prev) => {
+      const next = {
+        ...prev,
+        [domain]: {
+          path: normalize(selectedFile.path),
+          name: selectedFile.name,
+          openedAt: new Date().toISOString(),
+        },
+      };
 
-    setLastOpenedByDomain(next);
-    localStorage.setItem(LAST_OPENED_BY_DOMAIN_KEY, JSON.stringify(next));
-  }, [selectedFile]);
+      if (rootPath) {
+        setRootStateValue(rootPath, LAST_OPENED_BY_DOMAIN_KEY, next).catch(
+          () => {},
+        );
+      }
+
+      return next;
+    });
+  }, [selectedFile, rootPath]);
 
   async function handleOpenNode(node) {
     const top = getTopSegment(node?.path);
+    if (top && activeDomain && activeDomain !== top) {
+      await requestDomainTransitionFeedback(activeDomain, top);
+    }
     if (top) {
       setActiveDomain(top);
       setTreeViewMode("domain");
@@ -206,7 +248,7 @@ export default function Main() {
 
     if (folder) {
       setRootPath(folder);
-      localStorage.setItem("lastRootPath", folder);
+      localStorage.setItem(LAST_USED_ROOT_KEY, folder);
       setOnboardingError("");
     }
   }
@@ -225,7 +267,7 @@ export default function Main() {
       await createFolder(parent, rootName.trim());
       const newRoot = joinPath(parent, rootName.trim());
       setRootPath(newRoot);
-      localStorage.setItem("lastRootPath", newRoot);
+      localStorage.setItem(LAST_USED_ROOT_KEY, newRoot);
     } catch (err) {
       setOnboardingError(String(err));
     } finally {
@@ -260,11 +302,17 @@ export default function Main() {
   }
 
   function finishOnboarding() {
-    localStorage.setItem(ONBOARDING_KEY, "true");
+    if (rootPath) {
+      setRootStateValue(rootPath, ONBOARDING_KEY, true).catch(() => {});
+    }
     setOnboardingDone(true);
   }
 
-  if (!onboardingDone) {
+  if (!rootResolved) {
+    return null;
+  }
+
+  if (!rootPath || !onboardingDone) {
     return (
       <div
         style={{
@@ -330,6 +378,7 @@ export default function Main() {
       <StudyPlannerPanel
         open={isPlannerOpen}
         onClose={() => setIsPlannerOpen(false)}
+        rootPath={rootPath}
       />
 
       <AppSettingsPanel
@@ -344,19 +393,29 @@ export default function Main() {
         selectedNodeProfile={selectedNodeProfile}
         onSaveNodeProfile={saveNodeProfile}
         activeDomain={activeDomain}
+        rootPath={rootPath}
       />
 
       <Sidebar
         tree={visibleTree}
         domains={domains}
         activeDomain={activeDomain}
-        onSelectDomain={(domainNode) => {
+        onSelectDomain={async (domainNode) => {
           if (!domainNode) return;
+          if (activeDomain && activeDomain !== domainNode.name) {
+            await requestDomainTransitionFeedback(
+              activeDomain,
+              domainNode.name,
+            );
+          }
           setActiveDomain(domainNode.name);
           setTreeViewMode("domain");
-          handleOpenNode(domainNode);
+          await handleOpenNode(domainNode);
         }}
-        onBackToRoot={() => {
+        onBackToRoot={async () => {
+          if (activeDomain) {
+            await requestDomainTransitionFeedback(activeDomain, "");
+          }
           setTreeViewMode("root");
           setActiveDomain("");
           clearSelection();
@@ -401,6 +460,7 @@ export default function Main() {
             activeDomain={activeDomain}
             openDaysCount={openDaysCount}
             level={currentLevel}
+            rootPath={rootPath}
             lastOpenedItem={
               activeDomain ? lastOpenedByDomain[activeDomain] || null : null
             }

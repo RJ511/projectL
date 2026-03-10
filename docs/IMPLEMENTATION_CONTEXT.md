@@ -14,8 +14,9 @@ Este ficheiro é a referência rápida para **implementar, alterar ou explicar**
 - Frontend: React (Vite), foco em 3 níveis (`root`, `domain`, `item`).
 - Backend: Tauri + Rust, com motor OLM em `src-tauri/src/commands/olm.rs`.
 - Persistência local:
-  - OLM state/config: backend (`olm_save_state` / `olm_load_state`).
-  - UI/context analytics: `localStorage` (hooks frontend).
+  - OLM state/config: `.projectl-data/olm_state.json` no root selecionado.
+  - UI/context analytics/settings/plans: `.projectl-data/app_state.json` no root selecionado.
+  - A pasta `.projectl-data` é oculta na árvore da app.
 
 ## 3) Mapa de ficheiros e responsabilidades
 
@@ -38,6 +39,7 @@ Este ficheiro é a referência rápida para **implementar, alterar ou explicar**
   - Parsing de conceitos inline no editor via marcação `;;;conceito;;;` (compatível também com `;;conceito;;`).
   - Eventos automáticos OLM (ex.: `review` ao abrir).
   - Telemetria de uso (`learningAnalytics`): tempo por ficheiro/domínio/sessão, aberturas, etc.
+  - Persistência de perfis e analytics via `rootDataStore` no root do projeto.
 
 - `src/components/insights/KnowledgeLevels.jsx`
   - Painel contextual para Root/Domain.
@@ -69,6 +71,12 @@ Este ficheiro é a referência rápida para **implementar, alterar ou explicar**
 
 - `src/services/olm.service.jsx`
   - Wrapper frontend para comandos Tauri OLM.
+
+- `src/services/rootDataStore.js`
+  - KV store de estado da app em `.projectl-data/app_state.json`.
+
+- `src/services/dataPolicy.js`
+  - Paths e convenções da política de dados local no root.
 
 ## 4) Símbolos/funções-chave (onde mexer)
 
@@ -111,6 +119,7 @@ Também é possível declarar conceitos inline no conteúdo com `;;;conceito;;;`
 - Ingestão automática de evento: `trackOlmEvent(eventType, node, payload)` em `useFileSystem.jsx`.
 - Abrir ficheiro (`openFile`) gera evento leve de revisão (`review`).
 - Guardar ficheiro (`saveFile`) **não** gera evento de prática.
+- Perfis e analytics são persistidos em `.projectl-data/app_state.json`.
 - Sessão/tempo:
   - `startActiveFileTimer`
   - `closeActiveFileTimer`
@@ -148,6 +157,7 @@ Nem toda a lógica operacional está no `OLM_LOGIC_MAP.md`. Itens hoje implement
 - Regras de evento automático do editor e telemetria de uso: `useFileSystem.jsx`.
 - Separação de níveis na UI (`root/domain/item`): `Main.jsx` + `KnowledgeLevels.jsx`.
 - Config OLM por domínio no frontend: `AppSettingsPanel.jsx`.
+- Política de dados local no root (estado app + estado OLM): `rootDataStore.js` + `dataPolicy.js` + `tree.rs`.
 
 ## 7) “Se eu quiser mudar X, onde mudo?”
 
@@ -157,6 +167,7 @@ Nem toda a lógica operacional está no `OLM_LOGIC_MAP.md`. Itens hoje implement
 - Alterar quando eventos automáticos são emitidos: `openFile` / `saveFile` / `trackOlmEvent` em `useFileSystem.jsx`.
 - Alterar hierarquia Root/Domain/Item e renderização: `Main.jsx` + `Sidebar.jsx` + `KnowledgeLevels.jsx`.
 - Alterar contratos frontend↔backend: `src/services/olm.service.jsx` e `src-tauri/src/main.rs`.
+- Alterar política de dados local no root: `src/services/rootDataStore.js`, `src/services/dataPolicy.js`, `src-tauri/src/commands/tree.rs`.
 
 ## 8) Estado conhecido e manutenção
 

@@ -29,7 +29,7 @@ flowchart TD
 
 ## 3) Modelo de dados (persistente desde v2)
 
-O estado OLM é persistido em ficheiro JSON (AppData) entre reinícios da app via `olm_save_state` / `olm_load_state`.
+O estado OLM é persistido em ficheiro JSON dentro do root do projeto (`.projectl-data/olm_state.json`) entre reinícios da app via `olm_save_state` / `olm_load_state`.
 
 - `concepts`: conceitos
 - `edges`: pré-requisito -> alvo
@@ -262,9 +262,9 @@ A segmentação por domínio pode ser reforçada com:
 
 ## 10) Factos e limites atuais
 
-- Estado OLM é **persistido** em ficheiro JSON via `olm_save_state` / `olm_load_state` (atomic write com rename).
+- Estado OLM é **persistido** em `.projectl-data/olm_state.json` via `olm_save_state` / `olm_load_state` (atomic write com rename).
 - Eventos automáticos editor -> OLM estão ativos com `review` ao abrir ficheiro (`openFile` em `useFileSystem.jsx`).
-- No fluxo atual, guardar ficheiro (`saveFile`) **não** injeta evento automático; ingestão adicional é feita via OLM Panel/API.
+- Guardar ficheiros de teste/quiz (`quiz-*` / `teste-*`) pode disparar check-in metacognitivo 1-4 e ingestão `self_assessment`.
 - Eventos automáticos usam conceito por **perfil do nó** (ficheiro/pasta/domínio), com defaults e edição manual no Settings.
 - O conteúdo pode declarar conceitos inline com `;;;nome do conceito;;;` (compatível com `;;nome do conceito;;`), mapeados para IDs `<domínio>.inline.<slug>`.
 - Fórmulas já implementadas com defaults robustos (fallbacks para score, confidence e readiness).
@@ -288,6 +288,7 @@ A segmentação por domínio pode ser reforçada com:
 - `olm_get_state`
 - `olm_get_explain`
 - `olm_next_to_study` (agora com `domain_filter` e `exclude` opcionais)
+- `olm_next_content_to_study` (recomendação única de item baseada em conceitos priorizados)
 
 ### Novos (v2)
 
@@ -308,6 +309,17 @@ w_{final}=w_{type}\cdot w_{mapping}\cdot w_{conf}\cdot w_{meta}
 $$
 
 Com isso, o update deixa de ser apenas "resultado bruto" e passa a considerar qualidade metacognitiva.
+
+### 12.0 Porquê (decisão de produto)
+
+O objetivo desta camada é reduzir "cegueira" do modelo quando só existe telemetria comportamental. Dois utilizadores podem ter métricas semelhantes de interação, mas estados cognitivos muito diferentes. O check-in curto 1-4 acrescenta um sinal subjetivo mínimo para:
+
+1. Distinguir esforço produtivo vs friccao improdutiva.
+2. Capturar percecao de aprendizagem entre eventos objetivos.
+3. Ajustar `w_meta` sem depender apenas de acerto/erro.
+4. Melhorar priorizacao quando existe ambiguidade entre candidatos no ranking.
+
+Princípio: usar um input simples e frequente, de baixo custo cognitivo, para enriquecer a qualidade da evidência.
 
 ### 12.1 Sinais metacognitivos usados
 
@@ -335,7 +347,17 @@ $$
 w_{meta}= (1-meta\_strength) + meta\_strength\cdot meta\_raw
 $$
 
-No update real, o backend usa `meta_strength = 0.6` (balanced).
+No update real atual (`olm_ingest_event`), o backend usa `meta_strength = 0.6` (balanced) como constante.
+
+### 12.4 Check-ins metacognitivos 1-4 (frontend)
+
+Além dos sinais já presentes no payload, o frontend dispara perguntas curtas com resposta inteira `1..4` (1=muito mau/difícil, 4=muito bom/fácil) em três gatilhos:
+
+1. Após janela temporal de sessão (check-in periódico).
+2. No fim de fluxo de teste/quiz (ao guardar ficheiro `quiz-*`/`teste-*`).
+3. Ao sair de um domínio e entrar noutro (transição de contexto).
+
+Cada resposta gera um evento `self_assessment` com `payload.score` normalizado para `[0,1]`, `payload.meta_reflection_rating` e `payload.meta_trigger`, influenciando o update por `w_meta`.
 
 ## 13) Cenários sintéticos automáticos (implementado)
 
@@ -410,20 +432,20 @@ As execuções usam seed para perturbar ligeiramente os estados dos cenários (d
 
 ## 15) Config OLM (parâmetros persistidos)
 
-| Campo                  | Default      | Descrição                                                     |
-| ---------------------- | ------------ | ------------------------------------------------------------- |
-| `lambda`               | 0.70         | Peso de mastery vs uncertainty no score                       |
-| `gamma`                | 0.35         | Intensidade de penalização por incerteza na readiness         |
-| `theta`                | 0.50         | Limiar de readiness para hard-gate                            |
-| `min_readiness`        | 0.10         | Readiness mínima para aparecer no ranking                     |
-| `soft_gate_k`          | 1.60         | Expoente do soft-gating (maior = mais restritivo)             |
-| `meta_strength`        | 0.60         | Intensidade da metacognição no peso do evento                 |
-| `root_penalty`         | 0.12         | Penalização de score para conceitos raiz (sem prereqs)        |
-| `stop_mastery`         | 0.85         | Mastery acima do qual conceitos raiz são excluídos do ranking |
-| `exclude_concepts`     | `[]`         | Lista de concept_ids excluídos do `next_to_study`             |
-| `uncertainty_formula`  | `"standard"` | `"standard"` (1/N) ou `"sqrt"` (1/√N)                         |
-| `decay_enabled`        | `false`      | Ativar decay temporal no cálculo de estado efetivo            |
-| `decay_half_life_days` | 30           | Semi-vida do decay em dias                                    |
+| Campo                  | Default      | Descrição                                                                                    |
+| ---------------------- | ------------ | -------------------------------------------------------------------------------------------- |
+| `lambda`               | 0.70         | Peso de mastery vs uncertainty no score                                                      |
+| `gamma`                | 0.35         | Intensidade de penalização por incerteza na readiness                                        |
+| `theta`                | 0.50         | Limiar de readiness para hard-gate                                                           |
+| `min_readiness`        | 0.10         | Readiness mínima para aparecer no ranking                                                    |
+| `soft_gate_k`          | 1.60         | Expoente do soft-gating (maior = mais restritivo)                                            |
+| `meta_strength`        | 0.60         | Parâmetro persistido de metacognição (atualmente não aplicado no `olm_ingest_event` runtime) |
+| `root_penalty`         | 0.12         | Penalização de score para conceitos raiz (sem prereqs)                                       |
+| `stop_mastery`         | 0.85         | Mastery acima do qual conceitos raiz são excluídos do ranking                                |
+| `exclude_concepts`     | `[]`         | Lista de concept_ids excluídos do `next_to_study`                                            |
+| `uncertainty_formula`  | `"standard"` | `"standard"` (1/N) ou `"sqrt"` (1/√N)                                                        |
+| `decay_enabled`        | `false`      | Ativar decay temporal no cálculo de estado efetivo                                           |
+| `decay_half_life_days` | 30           | Semi-vida do decay em dias                                                                   |
 
 ### Como interpretar stop_mastery
 
@@ -441,7 +463,7 @@ Adicionar concept IDs técnicos/auxiliares ao `exclude_concepts` evita que polua
 4. `olm_export_json()` — devolve o JSON como string (para debug/backup manual).
 5. `olm_import_json(json)` — importa JSON de string.
 
-Sem `path`, usa `AppData/projectL/olm_state.json`. Pode passar path explícito para backups.
+Na política atual da app, o frontend passa path explícito para gravar/carregar em `.projectl-data/olm_state.json` no root selecionado. Sem `path`, o backend continua a suportar fallback em AppData.
 
 ## 17) Debug Ranking
 
@@ -457,6 +479,6 @@ Visível no OLM Panel → "Debug Ranking" no frontend.
 
 ## 18) Limitações e próximos passos
 
-1. **Item-aware ranking**: métricas por `content_id` já existem, mas o ranking principal ainda é orientado por conceito.
+1. **Item-aware ranking**: existe recomendação única de item (`olm_next_content_to_study`) orientada por conceitos; a qualidade depende de cobertura/qualidade de `content_concepts`.
 2. **Domain-aware automático**: atualmente o `domain_filter` é passado explicitamente pelo frontend; uma inferência automática pela pasta ativa pode ser integrada em `Main.jsx`.
 3. **Testes de integração end-to-end**: smoke tests manuais documentados são o próximo passo (ver PROJECT_GUIDE.md).

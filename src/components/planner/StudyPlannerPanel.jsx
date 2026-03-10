@@ -7,6 +7,10 @@ import {
 } from "lucide-react";
 import { nextToStudy } from "../../services/olm.service";
 import { getAnkiDeckStats, listAnkiDecks } from "../../services/anki.service";
+import {
+  getRootStateValue,
+  setRootStateValue,
+} from "../../services/rootDataStore";
 
 const PLANS_KEY = "appStudyPlans";
 
@@ -33,25 +37,15 @@ function getMonthDays(viewDate) {
   return cells;
 }
 
-function loadPlans() {
-  try {
-    const raw = localStorage.getItem(PLANS_KEY);
-    const parsed = raw ? JSON.parse(raw) : [];
-    if (!Array.isArray(parsed)) return [];
-    return parsed;
-  } catch {
-    return [];
-  }
-}
-
 export default function StudyPlannerPanel({
   open,
   onClose,
   domainFilter = null,
+  rootPath,
 }) {
   const [viewDate, setViewDate] = useState(new Date());
   const [selectedDate, setSelectedDate] = useState(toIsoDay(new Date()));
-  const [plans, setPlans] = useState(loadPlans);
+  const [plans, setPlans] = useState([]);
   const [newPlanTitle, setNewPlanTitle] = useState("");
   const [recommendations, setRecommendations] = useState([]);
   const [ankiDecks, setAnkiDecks] = useState([]);
@@ -61,8 +55,29 @@ export default function StudyPlannerPanel({
   const [loadingAnki, setLoadingAnki] = useState(false);
 
   useEffect(() => {
-    localStorage.setItem(PLANS_KEY, JSON.stringify(plans));
-  }, [plans]);
+    if (!rootPath) return;
+    setRootStateValue(rootPath, PLANS_KEY, plans).catch(() => {});
+  }, [plans, rootPath]);
+
+  useEffect(() => {
+    let mounted = true;
+
+    async function loadPlans() {
+      if (!rootPath) {
+        setPlans([]);
+        return;
+      }
+
+      const stored = await getRootStateValue(rootPath, PLANS_KEY, []);
+      if (!mounted) return;
+      setPlans(Array.isArray(stored) ? stored : []);
+    }
+
+    loadPlans();
+    return () => {
+      mounted = false;
+    };
+  }, [rootPath]);
 
   useEffect(() => {
     if (!open) return;

@@ -1,4 +1,8 @@
 import { useEffect, useMemo, useState } from "react";
+import {
+  getRootStateValue,
+  setRootStateValue,
+} from "../services/rootDataStore";
 
 const SETTINGS_KEY = "appSettings";
 
@@ -20,19 +24,36 @@ function sanitizeSettings(input = {}) {
   };
 }
 
-export function useAppSettings() {
-  const [settings, setSettings] = useState(() => {
-    try {
-      const raw = localStorage.getItem(SETTINGS_KEY);
-      if (!raw) return DEFAULT_SETTINGS;
-      return sanitizeSettings(JSON.parse(raw));
-    } catch {
-      return DEFAULT_SETTINGS;
-    }
-  });
+export function useAppSettings(rootPath) {
+  const [settings, setSettings] = useState(DEFAULT_SETTINGS);
 
   useEffect(() => {
-    localStorage.setItem(SETTINGS_KEY, JSON.stringify(settings));
+    let mounted = true;
+
+    async function loadSettings() {
+      if (!rootPath) {
+        setSettings(DEFAULT_SETTINGS);
+        return;
+      }
+      const stored = await getRootStateValue(rootPath, SETTINGS_KEY, null);
+      if (!mounted) return;
+      if (!stored) {
+        setSettings(DEFAULT_SETTINGS);
+        return;
+      }
+      setSettings(sanitizeSettings(stored));
+    }
+
+    loadSettings();
+    return () => {
+      mounted = false;
+    };
+  }, [rootPath]);
+
+  useEffect(() => {
+    if (rootPath) {
+      setRootStateValue(rootPath, SETTINGS_KEY, settings).catch(() => {});
+    }
     document.documentElement.style.setProperty(
       "--app-font-size",
       `${settings.fontSize}px`,
@@ -42,7 +63,7 @@ export function useAppSettings() {
       String(settings.lineHeight),
     );
     document.documentElement.setAttribute("data-theme", settings.theme);
-  }, [settings]);
+  }, [settings, rootPath]);
 
   const actions = useMemo(
     () => ({

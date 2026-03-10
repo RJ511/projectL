@@ -88,7 +88,12 @@ export function loadOlmState(path = null) {
 }
 
 export function getDebugRanking(options = {}) {
-  const { top = null, domainFilter = null, domain_filter = null, exclude = null } = options;
+  const {
+    top = null,
+    domainFilter = null,
+    domain_filter = null,
+    exclude = null,
+  } = options;
   return call("olm_get_debug_ranking", {
     top,
     domain_filter: domainFilter ?? domain_filter,
@@ -98,4 +103,27 @@ export function getDebugRanking(options = {}) {
 
 export function getContentMetrics(contentId = null) {
   return call("olm_get_content_metrics", { content_id: contentId });
+}
+
+export function nextContentToStudy(options = {}) {
+  const {
+    top = 5,
+    lambda,
+    readinessThreshold,
+    readiness_threshold,
+    domainFilter,
+    domain_filter,
+    contentPrefix,
+    content_prefix,
+    exclude,
+  } = options;
+
+  return call("olm_next_content_to_study", {
+    top,
+    lambda,
+    readiness_threshold: readinessThreshold ?? readiness_threshold,
+    domain_filter: domainFilter ?? domain_filter,
+    content_prefix: contentPrefix ?? content_prefix,
+    exclude,
+  });
 }

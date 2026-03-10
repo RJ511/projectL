@@ -23,6 +23,7 @@ fn main() {
             commands::olm_ingest_event,
             commands::olm_get_state,
             commands::olm_get_content_metrics,
+            commands::olm_next_content_to_study,
             commands::olm_get_explain,
             commands::olm_next_to_study,
             commands::olm_get_config,
