@@ -1,10 +1,10 @@
 #![allow(dead_code)]
 
+use chrono::{DateTime, Utc};
+use rand::rngs::StdRng;
+use rand::{Rng, SeedableRng};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use rand::{Rng, SeedableRng};
-use rand::rngs::StdRng;
-use chrono::{DateTime, Utc};
 use std::cmp::Ordering;
 use std::collections::{HashMap, HashSet};
 use std::hash::{Hash, Hasher};
@@ -200,11 +200,56 @@ struct ApproachConfig {
     stop_mastery: f64,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SimulationOptions {
+    pub generated_scenarios: usize,
+    pub graph_size: usize,
+    pub event_count: usize,
+    pub prereq_density: f64,
+    pub depth: usize,
+    pub mapping_quality: f64,
+}
+
+impl Default for SimulationOptions {
+    fn default() -> Self {
+        Self {
+            generated_scenarios: 0,
+            graph_size: 6,
+            event_count: 24,
+            prereq_density: 0.35,
+            depth: 3,
+            mapping_quality: 0.8,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ScenarioMetadata {
+    pub mode: String,
+    pub seed: u64,
+    pub graph_size: usize,
+    pub prereq_density: f64,
+    pub depth: usize,
+    pub event_count: usize,
+    pub event_mix: HashMap<String, f64>,
+    pub error_rate: f64,
+    pub confidence_level: f64,
+    pub effort_level: f64,
+    pub metacognitive_alignment: f64,
+    pub mapping_quality: f64,
+}
+
 #[derive(Debug, Clone)]
-struct ScenarioDefinition {
-    id: &'static str,
-    name: &'static str,
-    expected_any: &'static [&'static str],
+struct ScenarioBlueprint {
+    id: String,
+    name: String,
+    expected_any: Vec<String>,
+    concepts: Vec<String>,
+    edges: Vec<(String, String)>,
+    content_items: Vec<ContentItem>,
+    content_concepts: Vec<ContentConceptMap>,
+    events: Vec<StudyEvent>,
+    metadata: ScenarioMetadata,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -212,6 +257,7 @@ pub struct SimulationScenarioResult {
     pub scenario_id: String,
     pub scenario_name: String,
     pub expected_any: Vec<String>,
+    pub scenario_metadata: ScenarioMetadata,
     pub top_recommendation: Option<String>,
     pub top_recommendations: Vec<String>,
     pub rank_of_first_expected: Option<usize>,
@@ -329,7 +375,9 @@ fn normalized_weights(raw: &[(String, f64)]) -> Vec<(String, f64)> {
         return Vec::new();
     }
 
-    acc.into_iter().map(|(id, weight)| (id, weight / total)).collect()
+    acc.into_iter()
+        .map(|(id, weight)| (id, weight / total))
+        .collect()
 }
 
 fn content_mapping_quality(raw_weight_sum: f64, mapped_concepts: usize) -> ContentMappingQuality {
@@ -461,7 +509,8 @@ fn event_score(event: &StudyEvent) -> f64 {
         }
         "study_read" => {
             let duration = parse_payload_float(&event.payload, "duration_sec").unwrap_or(0.0);
-            let target = parse_payload_float(&event.payload, "target_duration_sec").unwrap_or(600.0);
+            let target =
+                parse_payload_float(&event.payload, "target_duration_sec").unwrap_or(600.0);
             if target <= 0.0 {
                 0.0
             } else {
@@ -470,7 +519,8 @@ fn event_score(event: &StudyEvent) -> f64 {
         }
         "review" => {
             let duration = parse_payload_float(&event.payload, "duration_sec").unwrap_or(0.0);
-            let target = parse_payload_float(&event.payload, "target_duration_sec").unwrap_or(600.0);
+            let target =
+                parse_payload_float(&event.payload, "target_duration_sec").unwrap_or(600.0);
             if target <= 0.0 {
                 0.0
             } else {
@@ -732,7 +782,9 @@ fn ingest_into_store(
 
     let mapped_concepts = normalize_maps(store, event);
     if mapped_concepts.is_empty() {
-        return Err("Event must include concept_ids or a content_id mapped to concepts".to_string());
+        return Err(
+            "Event must include concept_ids or a content_id mapped to concepts".to_string(),
+        );
     }
 
     store.study_events.push(event.clone());
@@ -748,11 +800,7 @@ fn ingest_into_store(
             continue;
         }
 
-        let prior_entries = store
-            .evidence
-            .get(&concept_id)
-            .cloned()
-            .unwrap_or_default();
+        let prior_entries = store.evidence.get(&concept_id).cloned().unwrap_or_default();
         let prior_evidence_count = prior_entries.len();
         let prior_self_assessment_same_day =
             count_self_assessment_same_day(&prior_entries, &event.timestamp);
@@ -956,11 +1004,19 @@ fn next_content_to_study_from_store(
 
             let readable_concepts: Vec<String> = supporting_concepts
                 .iter()
-                .map(|cid| concept_name_by_id.get(cid).cloned().unwrap_or_else(|| cid.clone()))
+                .map(|cid| {
+                    concept_name_by_id
+                        .get(cid)
+                        .cloned()
+                        .unwrap_or_else(|| cid.clone())
+                })
                 .collect();
 
             let why = vec![
-                format!("Conceitos prioritários relacionados: {}", readable_concepts.join(", ")),
+                format!(
+                    "Conceitos prioritários relacionados: {}",
+                    readable_concepts.join(", ")
+                ),
                 format!("Prioridade agregada por conceito: {:.3}", concept_signal),
                 format!(
                     "Qualidade do mapeamento: {:.2} (peso_total={:.2}, conceitos={})",
@@ -972,12 +1028,18 @@ fn next_content_to_study_from_store(
                     "Penalização por mapeamento fraco: x{:.2}",
                     mapping_quality.penalty
                 ),
-                format!("Histórico do item: avg_score={:.2}, attempts={}", avg_score, attempts),
+                format!(
+                    "Histórico do item: avg_score={:.2}, attempts={}",
+                    avg_score, attempts
+                ),
             ];
 
             Some(NextContentToStudyItem {
                 content_id: content_id.clone(),
-                title: store.content_items.get(&content_id).map(|item| item.title.clone()),
+                title: store
+                    .content_items
+                    .get(&content_id)
+                    .map(|item| item.title.clone()),
                 score: final_score,
                 attempts,
                 avg_score,
@@ -1066,10 +1128,8 @@ fn rank_next_to_study(
 
         candidates_before_gate += 1;
 
-        let (concept_mastery, concept_uncertainty) = state_by_id
-            .get(&concept.id)
-            .copied()
-            .unwrap_or((0.5, 1.0));
+        let (concept_mastery, concept_uncertainty) =
+            state_by_id.get(&concept.id).copied().unwrap_or((0.5, 1.0));
 
         let prereqs: Vec<&ConceptEdge> = store
             .edges
@@ -1088,7 +1148,10 @@ fn rank_next_to_study(
             prereqs
                 .iter()
                 .map(|edge| {
-                    let (m, u) = state_by_id.get(&edge.prereq_id).copied().unwrap_or((0.5, 1.0));
+                    let (m, u) = state_by_id
+                        .get(&edge.prereq_id)
+                        .copied()
+                        .unwrap_or((0.5, 1.0));
                     prereq_readiness(m, u, gamma)
                 })
                 .fold(1.0, f64::min)
@@ -1227,7 +1290,13 @@ fn scenario_ranking_metrics(
         _ => 0.0,
     };
 
-    (rank_of_first_expected.map(|idx| idx + 1), hit_at_1, hit_at_3, mrr, ndcg_at_3)
+    (
+        rank_of_first_expected.map(|idx| idx + 1),
+        hit_at_1,
+        hit_at_3,
+        mrr,
+        ndcg_at_3,
+    )
 }
 
 fn aggregate_subset_metrics(
@@ -1245,11 +1314,7 @@ fn aggregate_subset_metrics(
 
     let size = subset.len() as f64;
     let pass_rate = subset.iter().filter(|scenario| scenario.pass).count() as f64 / size;
-    let hit_at_3_rate = subset
-        .iter()
-        .filter(|scenario| scenario.hit_at_3)
-        .count() as f64
-        / size;
+    let hit_at_3_rate = subset.iter().filter(|scenario| scenario.hit_at_3).count() as f64 / size;
     let avg_mrr = subset.iter().map(|scenario| scenario.mrr).sum::<f64>() / size;
     let avg_ndcg = subset
         .iter()
@@ -1299,374 +1364,584 @@ fn sim_event(
     }
 }
 
-fn seed_sim_domain(store: &mut OlmStore) {
-    upsert_local_concept(store, "foundation", "Foundation");
-    upsert_local_concept(store, "domain_core", "Domain Core");
-    upsert_local_concept(store, "advanced_problem", "Advanced Problem");
-
-    add_local_edge(store, "foundation", "domain_core");
-    add_local_edge(store, "domain_core", "advanced_problem");
+fn scenario_event_mix(rng: &mut StdRng) -> HashMap<String, f64> {
+    let event_types = [
+        "quiz_attempt",
+        "practice_attempt",
+        "review",
+        "study_read",
+        "self_assessment",
+    ];
+    let mut weights = Vec::new();
+    for _ in event_types {
+        weights.push(rng.gen_range(0.1_f64..1.0_f64));
+    }
+    let total: f64 = weights.iter().sum();
+    event_types
+        .iter()
+        .enumerate()
+        .map(|(idx, t)| (t.to_string(), weights[idx] / total))
+        .collect()
 }
 
-fn run_scenario_by_id(
-    scenario_id: &str,
-    store: &mut OlmStore,
-    approach: &ApproachConfig,
-) -> Result<(), String> {
-    seed_sim_domain(store);
+fn sample_event_type(rng: &mut StdRng, mix: &HashMap<String, f64>) -> String {
+    let mut roll = rng.gen_range(0.0_f64..1.0_f64);
+    for event_type in [
+        "quiz_attempt",
+        "practice_attempt",
+        "review",
+        "study_read",
+        "self_assessment",
+    ] {
+        let weight = *mix.get(event_type).unwrap_or(&0.0);
+        if roll <= weight {
+            return event_type.to_string();
+        }
+        roll -= weight;
+    }
+    "practice_attempt".to_string()
+}
 
-    match scenario_id {
-        "S1" => {
-            ingest_into_store(
-                store,
-                &sim_event(
-                    "S1",
-                    1,
-                    "manual",
-                    "quiz_attempt",
-                    vec!["foundation"],
-                    None,
-                    json!({"correct": 1.0, "total": 1.0, "confidence": 0.8, "effort": 0.8, "perceived_score": 0.8}),
-                ),
-                approach.meta_strength,
-            )?;
-            ingest_into_store(
-                store,
-                &sim_event(
-                    "S1",
-                    2,
-                    "manual",
-                    "practice_attempt",
-                    vec!["foundation"],
-                    None,
-                    json!({"correct": 1.0, "total": 1.0, "confidence": 0.75, "effort": 0.7}),
-                ),
-                approach.meta_strength,
-            )?;
-            ingest_into_store(
-                store,
-                &sim_event(
-                    "S1",
-                    3,
-                    "manual",
-                    "practice_attempt",
-                    vec!["domain_core"],
-                    None,
-                    json!({"correct": 1.0, "total": 1.0, "confidence": 0.7, "effort": 0.7}),
-                ),
-                approach.meta_strength,
-            )?;
-            ingest_into_store(
-                store,
-                &sim_event(
-                    "S1",
-                    4,
-                    "manual",
-                    "practice_attempt",
-                    vec!["domain_core"],
-                    None,
-                    json!({"correct": 1.0, "total": 1.0, "confidence": 0.7, "effort": 0.65}),
-                ),
-                approach.meta_strength,
-            )?;
-            ingest_into_store(
-                store,
-                &sim_event(
-                    "S1",
-                    5,
-                    "manual",
-                    "practice_attempt",
-                    vec!["advanced_problem"],
-                    None,
-                    json!({"correct": 0.0, "total": 1.0, "confidence": 0.6, "effort": 0.7, "perceived_score": 0.7}),
-                ),
-                approach.meta_strength,
-            )?;
+fn baseline_scenario_blueprints(seed: u64) -> Vec<ScenarioBlueprint> {
+    let concepts = vec![
+        "foundation".to_string(),
+        "domain_core".to_string(),
+        "advanced_problem".to_string(),
+    ];
+    let mut list = Vec::new();
+    let base_mix = HashMap::from([
+        ("quiz_attempt".to_string(), 0.25),
+        ("practice_attempt".to_string(), 0.35),
+        ("review".to_string(), 0.15),
+        ("study_read".to_string(), 0.15),
+        ("self_assessment".to_string(), 0.10),
+    ]);
+
+    let make_meta = |id: &str,
+                     name: &str,
+                     error_rate: f64,
+                     meta: f64,
+                     mapping_quality: f64,
+                     event_count: usize| ScenarioMetadata {
+        mode: "baseline".to_string(),
+        seed,
+        graph_size: 3,
+        prereq_density: 0.66,
+        depth: 3,
+        event_count,
+        event_mix: base_mix.clone(),
+        error_rate,
+        confidence_level: 0.7,
+        effort_level: 0.7,
+        metacognitive_alignment: meta,
+        mapping_quality,
+    };
+
+    let mut s1_events = Vec::new();
+    s1_events.push(sim_event(
+        "S1",
+        1,
+        "manual",
+        "quiz_attempt",
+        vec!["foundation"],
+        None,
+        json!({"correct":1.0,"total":1.0,"confidence":0.8,"effort":0.8,"perceived_score":0.8}),
+    ));
+    s1_events.push(sim_event(
+        "S1",
+        2,
+        "manual",
+        "practice_attempt",
+        vec!["foundation"],
+        None,
+        json!({"correct":1.0,"total":1.0,"confidence":0.75,"effort":0.7}),
+    ));
+    s1_events.push(sim_event(
+        "S1",
+        3,
+        "manual",
+        "practice_attempt",
+        vec!["domain_core"],
+        None,
+        json!({"correct":1.0,"total":1.0,"confidence":0.7,"effort":0.7}),
+    ));
+    s1_events.push(sim_event(
+        "S1",
+        4,
+        "manual",
+        "practice_attempt",
+        vec!["domain_core"],
+        None,
+        json!({"correct":1.0,"total":1.0,"confidence":0.7,"effort":0.65}),
+    ));
+    s1_events.push(sim_event(
+        "S1",
+        5,
+        "manual",
+        "practice_attempt",
+        vec!["advanced_problem"],
+        None,
+        json!({"correct":0.0,"total":1.0,"confidence":0.6,"effort":0.7,"perceived_score":0.7}),
+    ));
+    list.push(ScenarioBlueprint {
+        id: "S1".to_string(),
+        name: "Progressão linear".to_string(),
+        expected_any: vec!["foundation".to_string(), "domain_core".to_string()],
+        concepts: concepts.clone(),
+        edges: vec![
+            ("foundation".to_string(), "domain_core".to_string()),
+            ("domain_core".to_string(), "advanced_problem".to_string()),
+        ],
+        content_items: vec![],
+        content_concepts: vec![],
+        events: s1_events,
+        metadata: make_meta("S1", "Progressão linear", 0.2, 0.75, 1.0, 5),
+    });
+
+    let s2_events = vec![
+        sim_event(
+            "S2",
+            1,
+            "manual",
+            "quiz_attempt",
+            vec!["foundation"],
+            None,
+            json!({"correct":0.0,"total":1.0,"confidence":0.8,"perceived_score":0.9,"effort":0.8}),
+        ),
+        sim_event(
+            "S2",
+            2,
+            "manual",
+            "practice_attempt",
+            vec!["foundation"],
+            None,
+            json!({"correct":0.0,"total":1.0,"confidence":0.75,"perceived_score":0.8,"effort":0.7}),
+        ),
+        sim_event(
+            "S2",
+            3,
+            "manual",
+            "practice_attempt",
+            vec!["advanced_problem"],
+            None,
+            json!({"correct":1.0,"total":1.0,"confidence":0.55,"effort":0.6}),
+        ),
+    ];
+    list.push(ScenarioBlueprint {
+        id: "S2".to_string(),
+        name: "Pré-requisito bloqueado".to_string(),
+        expected_any: vec!["foundation".to_string()],
+        concepts: concepts.clone(),
+        edges: vec![
+            ("foundation".to_string(), "domain_core".to_string()),
+            ("domain_core".to_string(), "advanced_problem".to_string()),
+        ],
+        content_items: vec![],
+        content_concepts: vec![],
+        events: s2_events,
+        metadata: make_meta("S2", "Pré-requisito bloqueado", 0.67, 0.2, 1.0, 3),
+    });
+
+    let mut s3_events = vec![sim_event(
+        "S3",
+        1,
+        "manual",
+        "practice_attempt",
+        vec!["foundation"],
+        None,
+        json!({"correct":1.0,"total":1.0,"confidence":0.8}),
+    )];
+    for step in 2..=5 {
+        s3_events.push(sim_event(
+            "S3",
+            step,
+            "manual",
+            "practice_attempt",
+            vec!["domain_core"],
+            None,
+            json!({"correct":0.0,"total":1.0,"confidence":0.7,"effort":0.65}),
+        ));
+    }
+    list.push(ScenarioBlueprint {
+        id: "S3".to_string(),
+        name: "Erros repetidos no core".to_string(),
+        expected_any: vec!["domain_core".to_string(), "foundation".to_string()],
+        concepts: concepts.clone(),
+        edges: vec![
+            ("foundation".to_string(), "domain_core".to_string()),
+            ("domain_core".to_string(), "advanced_problem".to_string()),
+        ],
+        content_items: vec![],
+        content_concepts: vec![],
+        events: s3_events,
+        metadata: make_meta("S3", "Erros repetidos no core", 0.8, 0.5, 1.0, 5),
+    });
+
+    let s4_events = vec![
+        sim_event(
+            "S4",
+            1,
+            "manual",
+            "review",
+            vec!["foundation"],
+            None,
+            json!({"confidence":0.9,"perceived_score":0.95,"effort":0.4}),
+        ),
+        sim_event(
+            "S4",
+            2,
+            "manual",
+            "review",
+            vec!["domain_core"],
+            None,
+            json!({"confidence":0.88,"perceived_score":0.9,"effort":0.4}),
+        ),
+        sim_event(
+            "S4",
+            3,
+            "manual",
+            "study_read",
+            vec!["advanced_problem"],
+            None,
+            json!({"confidence":0.85,"perceived_score":0.9,"effort":0.3}),
+        ),
+    ];
+    list.push(ScenarioBlueprint {
+        id: "S4".to_string(),
+        name: "Incerteza alta".to_string(),
+        expected_any: vec!["foundation".to_string()],
+        concepts: concepts.clone(),
+        edges: vec![
+            ("foundation".to_string(), "domain_core".to_string()),
+            ("domain_core".to_string(), "advanced_problem".to_string()),
+        ],
+        content_items: vec![],
+        content_concepts: vec![],
+        events: s4_events,
+        metadata: make_meta("S4", "Incerteza alta", 0.35, 0.95, 1.0, 3),
+    });
+
+    let s5_events = vec![
+        sim_event(
+            "S5",
+            1,
+            "manual",
+            "quiz_attempt",
+            vec!["foundation"],
+            None,
+            json!({"correct":1.0,"total":1.0,"confidence":0.78,"effort":0.7}),
+        ),
+        sim_event(
+            "S5",
+            2,
+            "manual",
+            "practice_attempt",
+            vec!["domain_core"],
+            None,
+            json!({"correct":1.0,"total":1.0,"confidence":0.72,"effort":0.7}),
+        ),
+        sim_event(
+            "S5",
+            3,
+            "manual",
+            "review",
+            vec!["advanced_problem"],
+            None,
+            json!({"confidence":0.68,"perceived_score":0.7,"effort":0.5}),
+        ),
+        sim_event(
+            "S5",
+            4,
+            "manual",
+            "self_assessment",
+            vec!["advanced_problem"],
+            None,
+            json!({"confidence":0.65,"perceived_score":0.6,"effort":0.6}),
+        ),
+    ];
+    list.push(ScenarioBlueprint {
+        id: "S5".to_string(),
+        name: "Multi-fonte".to_string(),
+        expected_any: vec![
+            "foundation".to_string(),
+            "domain_core".to_string(),
+            "advanced_problem".to_string(),
+        ],
+        concepts: concepts.clone(),
+        edges: vec![
+            ("foundation".to_string(), "domain_core".to_string()),
+            ("domain_core".to_string(), "advanced_problem".to_string()),
+        ],
+        content_items: vec![],
+        content_concepts: vec![],
+        events: s5_events,
+        metadata: make_meta("S5", "Multi-fonte", 0.25, 0.7, 1.0, 4),
+    });
+
+    let content_items = vec![ContentItem {
+        id: "lesson_1".to_string(),
+        item_type: "lesson".to_string(),
+        title: "Lesson 1".to_string(),
+        domain_id: None,
+    }];
+    let content_concepts = vec![
+        ContentConceptMap {
+            content_id: "lesson_1".to_string(),
+            concept_id: "foundation".to_string(),
+            coverage_weight: 1.0,
+        },
+        ContentConceptMap {
+            content_id: "lesson_1".to_string(),
+            concept_id: "domain_core".to_string(),
+            coverage_weight: 0.4,
+        },
+    ];
+    let s6_events = vec![
+        sim_event(
+            "S6",
+            1,
+            "manual",
+            "practice_attempt",
+            vec![],
+            Some("lesson_1"),
+            json!({"correct":1.0,"total":1.0,"confidence":0.75,"effort":0.7}),
+        ),
+        sim_event(
+            "S6",
+            2,
+            "manual",
+            "practice_attempt",
+            vec![],
+            Some("lesson_1"),
+            json!({"correct":1.0,"total":1.0,"confidence":0.7,"effort":0.7}),
+        ),
+        sim_event(
+            "S6",
+            3,
+            "manual",
+            "practice_attempt",
+            vec!["domain_core"],
+            None,
+            json!({"correct":0.0,"total":1.0,"confidence":0.6,"effort":0.7}),
+        ),
+    ];
+    list.push(ScenarioBlueprint {
+        id: "S6".to_string(),
+        name: "Cobertura parcial".to_string(),
+        expected_any: vec!["foundation".to_string(), "domain_core".to_string()],
+        concepts: concepts,
+        edges: vec![
+            ("foundation".to_string(), "domain_core".to_string()),
+            ("domain_core".to_string(), "advanced_problem".to_string()),
+        ],
+        content_items,
+        content_concepts,
+        events: s6_events,
+        metadata: make_meta("S6", "Cobertura parcial", 0.34, 0.7, 0.7, 3),
+    });
+
+    list
+}
+
+fn generated_scenario_blueprints(seed: u64, options: &SimulationOptions) -> Vec<ScenarioBlueprint> {
+    let mut rng = StdRng::seed_from_u64(seed ^ 0x9E3779B97F4A7C15);
+    let mut blueprints = Vec::new();
+
+    for idx in 0..options.generated_scenarios {
+        let scenario_seed = seed.wrapping_add((idx as u64) * 7919);
+        let mut local_rng = StdRng::seed_from_u64(scenario_seed);
+        let graph_size = options.graph_size.max(3);
+        let depth = options.depth.max(2).min(graph_size);
+        let prereq_density = options.prereq_density.clamp(0.0, 1.0);
+        let event_count = options.event_count.max(3);
+        let mapping_quality = options.mapping_quality.clamp(0.1, 1.0);
+
+        let concepts: Vec<String> = (0..graph_size)
+            .map(|i| format!("c{}_{}", idx + 1, i + 1))
+            .collect();
+        let mut concept_depth = vec![0usize; graph_size];
+        for d in concept_depth.iter_mut().skip(1) {
+            *d = local_rng.gen_range(1..=depth - 1);
         }
-        "S2" => {
-            ingest_into_store(
-                store,
-                &sim_event(
-                    "S2",
-                    1,
-                    "manual",
-                    "quiz_attempt",
-                    vec!["foundation"],
-                    None,
-                    json!({"correct": 0.0, "total": 1.0, "confidence": 0.8, "perceived_score": 0.9, "effort": 0.8}),
-                ),
-                approach.meta_strength,
-            )?;
-            ingest_into_store(
-                store,
-                &sim_event(
-                    "S2",
-                    2,
-                    "manual",
-                    "practice_attempt",
-                    vec!["foundation"],
-                    None,
-                    json!({"correct": 0.0, "total": 1.0, "confidence": 0.75, "perceived_score": 0.8, "effort": 0.7}),
-                ),
-                approach.meta_strength,
-            )?;
-            ingest_into_store(
-                store,
-                &sim_event(
-                    "S2",
-                    3,
-                    "manual",
-                    "practice_attempt",
-                    vec!["advanced_problem"],
-                    None,
-                    json!({"correct": 1.0, "total": 1.0, "confidence": 0.55, "effort": 0.6}),
-                ),
-                approach.meta_strength,
-            )?;
-        }
-        "S3" => {
-            ingest_into_store(
-                store,
-                &sim_event(
-                    "S3",
-                    1,
-                    "manual",
-                    "practice_attempt",
-                    vec!["foundation"],
-                    None,
-                    json!({"correct": 1.0, "total": 1.0, "confidence": 0.8}),
-                ),
-                approach.meta_strength,
-            )?;
-            for step in 2..=5 {
-                ingest_into_store(
-                    store,
-                    &sim_event(
-                        "S3",
-                        step,
-                        "manual",
-                        "practice_attempt",
-                        vec!["domain_core"],
-                        None,
-                        json!({"correct": 0.0, "total": 1.0, "confidence": 0.7, "perceived_score": 0.7, "effort": 0.7}),
-                    ),
-                    approach.meta_strength,
-                )?;
+
+        let mut edges = Vec::new();
+        for target in 1..graph_size {
+            let target_depth = concept_depth[target];
+            for prereq in 0..target {
+                if concept_depth[prereq] < target_depth && local_rng.gen_bool(prereq_density) {
+                    edges.push((concepts[prereq].clone(), concepts[target].clone()));
+                }
+            }
+            if !edges.iter().any(|(_, t)| t == &concepts[target]) {
+                let fallback = local_rng.gen_range(0..target);
+                edges.push((concepts[fallback].clone(), concepts[target].clone()));
             }
         }
-        "S4" => {
-            ingest_into_store(
-                store,
-                &sim_event(
-                    "S4",
-                    1,
-                    "reader",
-                    "study_read",
-                    vec!["foundation"],
-                    None,
-                    json!({"duration_sec": 45.0, "target_duration_sec": 300.0, "confidence": 0.4, "difficulty": 0.7}),
-                ),
-                approach.meta_strength,
-            )?;
-            ingest_into_store(
-                store,
-                &sim_event(
-                    "S4",
-                    2,
-                    "manual",
-                    "self_assessment",
-                    vec!["foundation"],
-                    None,
-                    json!({"score": 0.4, "confidence": 0.4, "effort": 0.5}),
-                ),
-                approach.meta_strength,
-            )?;
-        }
-        "S5" => {
-            ingest_into_store(
-                store,
-                &sim_event(
-                    "S5",
-                    1,
-                    "anki",
-                    "flashcard_review",
-                    vec!["foundation"],
-                    None,
-                    json!({"rating": "good", "confidence": 0.8, "effort": 0.7}),
-                ),
-                approach.meta_strength,
-            )?;
-            ingest_into_store(
-                store,
-                &sim_event(
-                    "S5",
-                    2,
-                    "manual",
-                    "quiz_attempt",
-                    vec!["domain_core"],
-                    None,
-                    json!({"correct": 1.0, "total": 1.0, "confidence": 0.75, "effort": 0.75}),
-                ),
-                approach.meta_strength,
-            )?;
-            ingest_into_store(
-                store,
-                &sim_event(
-                    "S5",
-                    3,
-                    "manual",
-                    "practice_attempt",
-                    vec!["advanced_problem"],
-                    None,
-                    json!({"correct": 0.0, "total": 1.0, "confidence": 0.5, "effort": 0.6}),
-                ),
-                approach.meta_strength,
-            )?;
-            ingest_into_store(
-                store,
-                &sim_event(
-                    "S5",
-                    4,
-                    "manual",
-                    "practice_attempt",
-                    vec!["foundation"],
-                    None,
-                    json!({"correct": 1.0, "total": 1.0, "confidence": 0.9, "effort": 0.8}),
-                ),
-                approach.meta_strength,
-            )?;
-            ingest_into_store(
-                store,
-                &sim_event(
-                    "S5",
-                    5,
-                    "manual",
-                    "practice_attempt",
-                    vec!["foundation"],
-                    None,
-                    json!({"correct": 1.0, "total": 1.0, "confidence": 0.9, "effort": 0.8}),
-                ),
-                approach.meta_strength,
-            )?;
-        }
-        "S6" => {
-            store.content_items.insert(
-                "lesson_1".to_string(),
-                ContentItem {
-                    id: "lesson_1".to_string(),
-                    item_type: "note".to_string(),
-                    title: "Lesson 1".to_string(),
-                    domain_id: Some("sim".to_string()),
-                },
-            );
 
-            store.content_concepts.push(ContentConceptMap {
-                content_id: "lesson_1".to_string(),
-                concept_id: "foundation".to_string(),
-                coverage_weight: 1.0,
-            });
-            store.content_concepts.push(ContentConceptMap {
-                content_id: "lesson_1".to_string(),
-                concept_id: "domain_core".to_string(),
-                coverage_weight: 0.4,
-            });
+        let event_mix = scenario_event_mix(&mut rng);
+        let error_rate = local_rng.gen_range(0.05_f64..0.65_f64);
+        let confidence_level = local_rng.gen_range(0.4_f64..0.95_f64);
+        let effort_level = local_rng.gen_range(0.35_f64..0.95_f64);
+        let metacognitive_alignment = local_rng.gen_range(0.2_f64..0.95_f64);
 
-            ingest_into_store(
-                store,
-                &sim_event(
-                    "S6",
-                    1,
-                    "manual",
-                    "practice_attempt",
-                    vec![],
-                    Some("lesson_1"),
-                    json!({"correct": 1.0, "total": 1.0, "confidence": 0.75, "effort": 0.7}),
-                ),
-                approach.meta_strength,
-            )?;
-            ingest_into_store(
-                store,
-                &sim_event(
-                    "S6",
-                    2,
-                    "manual",
-                    "practice_attempt",
-                    vec![],
-                    Some("lesson_1"),
-                    json!({"correct": 1.0, "total": 1.0, "confidence": 0.7, "effort": 0.7}),
-                ),
-                approach.meta_strength,
-            )?;
-            ingest_into_store(
-                store,
-                &sim_event(
-                    "S6",
-                    3,
-                    "manual",
-                    "practice_attempt",
-                    vec!["domain_core"],
-                    None,
-                    json!({"correct": 0.0, "total": 1.0, "confidence": 0.6, "effort": 0.7}),
-                ),
-                approach.meta_strength,
-            )?;
+        let mut content_items = Vec::new();
+        let mut content_concepts = Vec::new();
+        for content_idx in 0..(graph_size / 2).max(1) {
+            let content_id = format!("g{}_lesson_{}", idx + 1, content_idx + 1);
+            content_items.push(ContentItem {
+                id: content_id.clone(),
+                item_type: "lesson".to_string(),
+                title: format!("Generated Lesson {}", content_idx + 1),
+                domain_id: None,
+            });
+            for concept_id in concepts.iter().filter(|_| local_rng.gen_bool(0.5)) {
+                let weight =
+                    (local_rng.gen_range(0.2_f64..1.0_f64) * mapping_quality).clamp(0.05, 1.0);
+                content_concepts.push(ContentConceptMap {
+                    content_id: content_id.clone(),
+                    concept_id: concept_id.clone(),
+                    coverage_weight: weight,
+                });
+            }
         }
-        _ => return Err(format!("Unknown scenario id: {}", scenario_id)),
+
+        let mut events = Vec::new();
+        for step in 0..event_count {
+            let event_type = sample_event_type(&mut local_rng, &event_mix);
+            let concept_index = local_rng.gen_range(0..graph_size);
+            let concept_id = concepts[concept_index].clone();
+            let had_error = local_rng.gen_bool(error_rate);
+            let base_score = if had_error {
+                local_rng.gen_range(0.0_f64..0.45_f64)
+            } else {
+                local_rng.gen_range(0.55_f64..1.0_f64)
+            };
+            let perceived = (base_score * metacognitive_alignment)
+                + ((1.0 - metacognitive_alignment) * local_rng.gen_range(0.0_f64..1.0_f64));
+            let confidence =
+                (confidence_level + local_rng.gen_range(-0.15_f64..0.15_f64)).clamp(0.0, 1.0);
+            let effort = (effort_level + local_rng.gen_range(-0.15_f64..0.15_f64)).clamp(0.0, 1.0);
+            let payload = match event_type.as_str() {
+                "quiz_attempt" | "practice_attempt" => {
+                    let total = 1.0;
+                    json!({"correct": if base_score >= 0.5 { 1.0 } else { 0.0 }, "total": total, "confidence": confidence, "effort": effort, "perceived_score": perceived})
+                }
+                _ => {
+                    json!({"confidence": confidence, "effort": effort, "perceived_score": perceived})
+                }
+            };
+
+            let use_content = local_rng.gen_bool(0.35) && !content_items.is_empty();
+            let content_id = if use_content {
+                Some(
+                    content_items[local_rng.gen_range(0..content_items.len())]
+                        .id
+                        .as_str(),
+                )
+            } else {
+                None
+            };
+            let concept_ids = if use_content && local_rng.gen_bool(0.4) {
+                vec![]
+            } else {
+                vec![concept_id.as_str()]
+            };
+            events.push(sim_event(
+                &format!("G{}", idx + 1),
+                (step + 1) as u32,
+                "generated",
+                &event_type,
+                concept_ids,
+                content_id,
+                payload,
+            ));
+        }
+
+        let mut avg_scores: HashMap<String, (f64, usize)> = HashMap::new();
+        for event in &events {
+            let score = event_score(event);
+            for c in event.concept_ids.iter() {
+                let entry = avg_scores.entry(c.clone()).or_insert((0.0, 0));
+                entry.0 += score;
+                entry.1 += 1;
+            }
+        }
+        let expected_any = avg_scores
+            .iter()
+            .filter_map(|(k, (sum, n))| {
+                if *n > 0 && (*sum / *n as f64) < 0.55 {
+                    Some(k.clone())
+                } else {
+                    None
+                }
+            })
+            .take(3)
+            .collect::<Vec<_>>();
+        let expected_any = if expected_any.is_empty() {
+            vec![concepts[0].clone()]
+        } else {
+            expected_any
+        };
+
+        blueprints.push(ScenarioBlueprint {
+            id: format!("G{}", idx + 1),
+            name: format!("Generated scenario {}", idx + 1),
+            expected_any,
+            concepts,
+            edges,
+            content_items,
+            content_concepts,
+            events,
+            metadata: ScenarioMetadata {
+                mode: "generated".to_string(),
+                seed: scenario_seed,
+                graph_size,
+                prereq_density,
+                depth,
+                event_count,
+                event_mix,
+                error_rate,
+                confidence_level,
+                effort_level,
+                metacognitive_alignment,
+                mapping_quality,
+            },
+        });
+    }
+
+    blueprints
+}
+
+fn build_simulation_scenarios(seed: u64, options: &SimulationOptions) -> Vec<ScenarioBlueprint> {
+    let mut scenarios = baseline_scenario_blueprints(seed);
+    scenarios.extend(generated_scenario_blueprints(seed, options));
+    scenarios
+}
+
+fn materialize_scenario(
+    store: &mut OlmStore,
+    scenario: &ScenarioBlueprint,
+    approach: &ApproachConfig,
+) -> Result<(), String> {
+    for concept_id in &scenario.concepts {
+        upsert_local_concept(store, concept_id, concept_id);
+    }
+    for (prereq, target) in &scenario.edges {
+        add_local_edge(store, prereq, target);
+    }
+
+    for item in &scenario.content_items {
+        store.content_items.insert(item.id.clone(), item.clone());
+    }
+    for map in &scenario.content_concepts {
+        store.content_concepts.push(map.clone());
+    }
+
+    for event in &scenario.events {
+        ingest_into_store(store, event, approach.meta_strength)?;
     }
 
     Ok(())
-}
-
-fn apply_seeded_scenario_noise(store: &mut OlmStore, seed: u64, scenario_id: &str) {
-    let mut hasher = std::collections::hash_map::DefaultHasher::new();
-    scenario_id.hash(&mut hasher);
-    let scenario_hash = hasher.finish();
-    let mixed_seed = seed ^ scenario_hash;
-
-    let mut rng = StdRng::seed_from_u64(mixed_seed);
-
-    for state in store.concept_state.values_mut() {
-        let alpha_jitter = 1.0 + rng.gen_range(-0.08_f64..=0.08_f64);
-        let beta_jitter = 1.0 + rng.gen_range(-0.08_f64..=0.08_f64);
-
-        state.alpha = (state.alpha * alpha_jitter).max(0.05);
-        state.beta = (state.beta * beta_jitter).max(0.05);
-    }
-}
-
-fn scenario_definitions() -> Vec<ScenarioDefinition> {
-    vec![
-        ScenarioDefinition {
-            id: "S1",
-            name: "Progressão linear",
-            expected_any: &["foundation", "domain_core"],
-        },
-        ScenarioDefinition {
-            id: "S2",
-            name: "Pré-requisito bloqueado",
-            expected_any: &["foundation"],
-        },
-        ScenarioDefinition {
-            id: "S3",
-            name: "Erros repetidos no core",
-            expected_any: &["domain_core", "foundation"],
-        },
-        ScenarioDefinition {
-            id: "S4",
-            name: "Incerteza alta",
-            expected_any: &["foundation"],
-        },
-        ScenarioDefinition {
-            id: "S5",
-            name: "Multi-fonte",
-            expected_any: &["foundation", "domain_core", "advanced_problem"],
-        },
-        ScenarioDefinition {
-            id: "S6",
-            name: "Cobertura parcial",
-            expected_any: &["foundation", "domain_core"],
-        },
-    ]
 }
 
 fn approach_definitions() -> Vec<ApproachConfig> {
@@ -1766,7 +2041,8 @@ pub fn olm_add_edge(state: State<OlmState>, edge: ConceptEdge) -> Result<Concept
     }
 
     let mut store = state.inner.lock().map_err(|_| "State lock poisoned")?;
-    if !store.concepts.contains_key(&edge.prereq_id) || !store.concepts.contains_key(&edge.target_id)
+    if !store.concepts.contains_key(&edge.prereq_id)
+        || !store.concepts.contains_key(&edge.target_id)
     {
         return Err("Both concepts must exist before creating an edge".to_string());
     }
@@ -1873,15 +2149,16 @@ pub fn olm_get_state(state: State<OlmState>) -> Result<Vec<ConceptStateView>, St
         .concepts
         .values()
         .map(|concept| {
-            let concept_state = store
-                .concept_state
-                .get(&concept.id)
-                .cloned()
-                .unwrap_or(ConceptState {
-                    alpha: 1.0,
-                    beta: 1.0,
-                    last_update: None,
-                });
+            let concept_state =
+                store
+                    .concept_state
+                    .get(&concept.id)
+                    .cloned()
+                    .unwrap_or(ConceptState {
+                        alpha: 1.0,
+                        beta: 1.0,
+                        last_update: None,
+                    });
             let effective_state = decay_state_if_needed(&concept_state, &store.config);
 
             ConceptStateView {
@@ -1945,11 +2222,18 @@ pub fn olm_next_to_study(
 
 #[tauri::command]
 pub fn olm_run_synthetic_scenarios() -> Result<SimulationReport, String> {
-    olm_run_synthetic_scenarios_seeded(0)
+    olm_run_synthetic_scenarios_seeded_with_options(0, SimulationOptions::default())
 }
 
 pub fn olm_run_synthetic_scenarios_seeded(seed: u64) -> Result<SimulationReport, String> {
-    let scenarios = scenario_definitions();
+    olm_run_synthetic_scenarios_seeded_with_options(seed, SimulationOptions::default())
+}
+
+pub fn olm_run_synthetic_scenarios_seeded_with_options(
+    seed: u64,
+    options: SimulationOptions,
+) -> Result<SimulationReport, String> {
+    let scenarios = build_simulation_scenarios(seed, &options);
     let approaches = approach_definitions();
     let train_split = ["S1", "S2", "S3"];
     let test_split = ["S4", "S5", "S6"];
@@ -1969,8 +2253,8 @@ pub fn olm_run_synthetic_scenarios_seeded(seed: u64) -> Result<SimulationReport,
 
         for scenario in scenarios.iter() {
             let mut store = OlmStore::default();
-            run_scenario_by_id(scenario.id, &mut store, approach)?;
-            apply_seeded_scenario_noise(&mut store, seed, scenario.id);
+            materialize_scenario(&mut store, scenario, approach)?;
+            apply_seeded_scenario_noise(&mut store, seed, &scenario.id);
 
             let sim_exclude: HashSet<String> = HashSet::new();
             let (ranked, diagnostics) = rank_next_to_study(
@@ -1991,7 +2275,7 @@ pub fn olm_run_synthetic_scenarios_seeded(seed: u64) -> Result<SimulationReport,
             let top_recommendations: Vec<String> =
                 ranked.iter().map(|item| item.concept_id.clone()).collect();
             let (rank_of_first_expected, pass, hit_at_3, mrr, ndcg_at_3) =
-                scenario_ranking_metrics(&ranked, scenario.expected_any);
+                scenario_ranking_metrics(&ranked, &scenario.expected_any);
 
             if pass {
                 passed += 1;
@@ -2008,6 +2292,7 @@ pub fn olm_run_synthetic_scenarios_seeded(seed: u64) -> Result<SimulationReport,
                 scenario_id: scenario.id.to_string(),
                 scenario_name: scenario.name.to_string(),
                 expected_any: scenario.expected_any.iter().map(|s| s.to_string()).collect(),
+                scenario_metadata: scenario.metadata.clone(),
                 top_recommendation,
                 top_recommendations,
                 rank_of_first_expected,
@@ -2079,7 +2364,11 @@ pub fn olm_run_synthetic_scenarios_seeded(seed: u64) -> Result<SimulationReport,
 
     let best_approach_id = approach_reports
         .iter()
-        .max_by(|a, b| a.pass_rate.partial_cmp(&b.pass_rate).unwrap_or(Ordering::Equal))
+        .max_by(|a, b| {
+            a.pass_rate
+                .partial_cmp(&b.pass_rate)
+                .unwrap_or(Ordering::Equal)
+        })
         .map(|report| report.approach_id.clone())
         .unwrap_or_else(|| "none".to_string());
 
@@ -2197,8 +2486,7 @@ pub fn olm_save_state(
             .path()
             .app_data_dir()
             .map_err(|e| format!("App data dir error: {}", e))?;
-        std::fs::create_dir_all(&data_dir)
-            .map_err(|e| format!("Create dir error: {}", e))?;
+        std::fs::create_dir_all(&data_dir).map_err(|e| format!("Create dir error: {}", e))?;
         data_dir.join("olm_state.json")
     };
 
@@ -2229,8 +2517,7 @@ pub fn olm_load_state(
         return Err(format!("State file not found: {}", file_path.display()));
     }
 
-    let json = std::fs::read_to_string(&file_path)
-        .map_err(|e| format!("Read error: {}", e))?;
+    let json = std::fs::read_to_string(&file_path).map_err(|e| format!("Read error: {}", e))?;
     let snapshot: OlmSnapshot =
         serde_json::from_str(&json).map_err(|e| format!("Deserialization error: {}", e))?;
 
@@ -2484,20 +2771,32 @@ mod tests {
         let st = store.concept_state.get("c1").unwrap();
         assert!(st.alpha > 1.0, "alpha should increase after correct answer");
         assert!(st.beta >= 1.0, "beta should not drop below initial");
-        assert!(st.alpha <= 3.0, "alpha should be reasonable after one event");
+        assert!(
+            st.alpha <= 3.0,
+            "alpha should be reasonable after one event"
+        );
     }
 
     #[test]
     fn test_metacognitive_weight_zero_strength() {
-        let e = make_event("quiz_attempt", json!({"correct": 1.0, "total": 1.0, "confidence": 0.8}));
+        let e = make_event(
+            "quiz_attempt",
+            json!({"correct": 1.0, "total": 1.0, "confidence": 0.8}),
+        );
         let meta = metacognitive_signal(&e, Some(1.0), 1.0, 0.0, 0, 0);
-        assert_eq!(meta.effective_weight, 1.0, "meta_strength=0 should give weight=1.0");
+        assert_eq!(
+            meta.effective_weight, 1.0,
+            "meta_strength=0 should give weight=1.0"
+        );
         assert!((meta.effective_score - 1.0).abs() < 1e-9);
     }
 
     #[test]
     fn test_metacognitive_session_cap_reduces_reliability() {
-        let e = make_event("self_assessment", json!({"score": 1.0, "confidence": 0.9, "effort": 0.8}));
+        let e = make_event(
+            "self_assessment",
+            json!({"score": 1.0, "confidence": 0.9, "effort": 0.8}),
+        );
         let no_cap = metacognitive_signal(&e, None, 1.0, 0.6, 5, 0);
         let with_cap = metacognitive_signal(&e, None, 1.0, 0.6, 5, 6);
 
@@ -2509,14 +2808,20 @@ mod tests {
 
     #[test]
     fn test_metacognitive_low_reliability_shrinks_score_towards_neutral() {
-        let e = make_event("self_assessment", json!({"score": 1.0, "confidence": 0.05, "effort": 0.2}));
+        let e = make_event(
+            "self_assessment",
+            json!({"score": 1.0, "confidence": 0.05, "effort": 0.2}),
+        );
         let meta = metacognitive_signal(&e, None, 1.0, 0.8, 0, 8);
 
         assert!(
             meta.effective_score < 0.9,
             "low reliability should shrink effective score away from extreme values"
         );
-        assert!(meta.effective_score > 0.5, "effective score should stay above neutral for raw score=1");
+        assert!(
+            meta.effective_score > 0.5,
+            "effective score should stay above neutral for raw score=1"
+        );
     }
 
     #[test]
@@ -2533,14 +2838,44 @@ mod tests {
 
         let exclude = HashSet::new();
         // Without penalty
-        let (ranked_no_penalty, _) =
-            rank_next_to_study(&store, None, 0.7, 0.5, 0.1, 0.35, Some(1.6), 0.0, 0.99, &exclude, None, "standard");
+        let (ranked_no_penalty, _) = rank_next_to_study(
+            &store,
+            None,
+            0.7,
+            0.5,
+            0.1,
+            0.35,
+            Some(1.6),
+            0.0,
+            0.99,
+            &exclude,
+            None,
+            "standard",
+        );
         // With penalty=0.5
-        let (ranked_penalty, _) =
-            rank_next_to_study(&store, None, 0.7, 0.5, 0.1, 0.35, Some(1.6), 0.5, 0.99, &exclude, None, "standard");
+        let (ranked_penalty, _) = rank_next_to_study(
+            &store,
+            None,
+            0.7,
+            0.5,
+            0.1,
+            0.35,
+            Some(1.6),
+            0.5,
+            0.99,
+            &exclude,
+            None,
+            "standard",
+        );
 
-        let root_no_penalty = ranked_no_penalty.iter().find(|i| i.concept_id == "root").unwrap();
-        let root_penalty = ranked_penalty.iter().find(|i| i.concept_id == "root").unwrap();
+        let root_no_penalty = ranked_no_penalty
+            .iter()
+            .find(|i| i.concept_id == "root")
+            .unwrap();
+        let root_penalty = ranked_penalty
+            .iter()
+            .find(|i| i.concept_id == "root")
+            .unwrap();
 
         assert!(
             root_penalty.score < root_no_penalty.score,
@@ -2573,8 +2908,20 @@ mod tests {
 
         let exclude = HashSet::new();
         // stop_mastery=0.7 → root mastery (0.91) > 0.7 → excluded
-        let (ranked, _) =
-            rank_next_to_study(&store, None, 0.7, 0.5, 0.1, 0.35, Some(1.6), 0.12, 0.7, &exclude, None, "standard");
+        let (ranked, _) = rank_next_to_study(
+            &store,
+            None,
+            0.7,
+            0.5,
+            0.1,
+            0.35,
+            Some(1.6),
+            0.12,
+            0.7,
+            &exclude,
+            None,
+            "standard",
+        );
 
         assert!(
             ranked.iter().all(|i| i.concept_id != "root"),
@@ -2604,8 +2951,20 @@ mod tests {
         );
 
         let exclude = HashSet::new();
-        let (ranked, _) =
-            rank_next_to_study(&store, None, 0.7, 0.5, 0.1, 0.35, Some(1.6), 0.12, 0.7, &exclude, None, "standard");
+        let (ranked, _) = rank_next_to_study(
+            &store,
+            None,
+            0.7,
+            0.5,
+            0.1,
+            0.35,
+            Some(1.6),
+            0.12,
+            0.7,
+            &exclude,
+            None,
+            "standard",
+        );
 
         assert!(
             ranked.iter().any(|i| i.concept_id == "root"),
@@ -2636,8 +2995,20 @@ mod tests {
         let mut exclude = HashSet::new();
         exclude.insert("c1".to_string());
 
-        let (ranked, _) =
-            rank_next_to_study(&store, None, 0.7, 0.5, 0.1, 0.35, Some(1.6), 0.12, 0.99, &exclude, None, "standard");
+        let (ranked, _) = rank_next_to_study(
+            &store,
+            None,
+            0.7,
+            0.5,
+            0.1,
+            0.35,
+            Some(1.6),
+            0.12,
+            0.99,
+            &exclude,
+            None,
+            "standard",
+        );
 
         assert!(
             ranked.iter().all(|i| i.concept_id != "c1"),
@@ -2681,8 +3052,20 @@ mod tests {
         );
 
         let exclude = HashSet::new();
-        let (ranked, _) =
-            rank_next_to_study(&store, None, 0.7, 0.5, 0.1, 0.35, Some(1.6), 0.12, 0.99, &exclude, Some("math"), "standard");
+        let (ranked, _) = rank_next_to_study(
+            &store,
+            None,
+            0.7,
+            0.5,
+            0.1,
+            0.35,
+            Some(1.6),
+            0.12,
+            0.99,
+            &exclude,
+            Some("math"),
+            "standard",
+        );
 
         assert!(
             ranked.iter().all(|i| i.concept_id.starts_with("math")),
@@ -2775,17 +3158,44 @@ mod tests {
 
         let exclude = HashSet::new();
         // k=2 soft gate
-        let (ranked_soft, _) =
-            rank_next_to_study(&store, None, 0.7, 0.5, 0.1, 0.35, Some(2.0), 0.0, 0.99, &exclude, None, "standard");
+        let (ranked_soft, _) = rank_next_to_study(
+            &store,
+            None,
+            0.7,
+            0.5,
+            0.1,
+            0.35,
+            Some(2.0),
+            0.0,
+            0.99,
+            &exclude,
+            None,
+            "standard",
+        );
         // k=3 strict gate
-        let (ranked_strict, _) =
-            rank_next_to_study(&store, None, 0.7, 0.5, 0.1, 0.35, Some(3.0), 0.0, 0.99, &exclude, None, "standard");
+        let (ranked_strict, _) = rank_next_to_study(
+            &store,
+            None,
+            0.7,
+            0.5,
+            0.1,
+            0.35,
+            Some(3.0),
+            0.0,
+            0.99,
+            &exclude,
+            None,
+            "standard",
+        );
 
         let target_soft = ranked_soft.iter().find(|i| i.concept_id == "target");
         let target_strict = ranked_strict.iter().find(|i| i.concept_id == "target");
 
         assert!(target_soft.is_some(), "target should appear in soft gating");
-        assert!(target_strict.is_some(), "target should appear in strict gating");
+        assert!(
+            target_strict.is_some(),
+            "target should appear in strict gating"
+        );
         assert!(
             target_soft.unwrap().score >= target_strict.unwrap().score,
             "soft gating (k=2) should give higher score than strict (k=3) for unready concept"
@@ -2902,8 +3312,7 @@ mod tests {
             }),
         };
 
-        ingest_into_store(&mut store, &event, 0.6)
-            .expect("test_end self_assessment should ingest");
+        ingest_into_store(&mut store, &event, 0.6).expect("test_end self_assessment should ingest");
 
         assert_eq!(store.study_events.len(), 1);
         assert_eq!(

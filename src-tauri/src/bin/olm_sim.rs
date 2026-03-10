@@ -7,6 +7,12 @@ fn main() {
     let mut as_json = false;
     let mut output_path: Option<String> = None;
     let mut seeds: Vec<u64> = vec![0];
+    let mut generated_scenarios: usize = 0;
+    let mut graph_size: usize = 6;
+    let mut event_count: usize = 24;
+    let mut prereq_density: f64 = 0.35;
+    let mut depth: usize = 3;
+    let mut mapping_quality: f64 = 0.8;
 
     let mut index = 1usize;
     while index < args.len() {
@@ -38,6 +44,54 @@ fn main() {
                 seeds = (0..count as u64).collect();
                 index += 2;
             }
+            "--generated-scenarios" => {
+                if index + 1 >= args.len() {
+                    eprintln!("Missing count after --generated-scenarios");
+                    std::process::exit(1);
+                }
+                generated_scenarios = args[index + 1].parse().unwrap_or(0);
+                index += 2;
+            }
+            "--graph-size" => {
+                if index + 1 >= args.len() {
+                    eprintln!("Missing value after --graph-size");
+                    std::process::exit(1);
+                }
+                graph_size = args[index + 1].parse().unwrap_or(6);
+                index += 2;
+            }
+            "--event-count" => {
+                if index + 1 >= args.len() {
+                    eprintln!("Missing value after --event-count");
+                    std::process::exit(1);
+                }
+                event_count = args[index + 1].parse().unwrap_or(24);
+                index += 2;
+            }
+            "--prereq-density" => {
+                if index + 1 >= args.len() {
+                    eprintln!("Missing value after --prereq-density");
+                    std::process::exit(1);
+                }
+                prereq_density = args[index + 1].parse().unwrap_or(0.35);
+                index += 2;
+            }
+            "--depth" => {
+                if index + 1 >= args.len() {
+                    eprintln!("Missing value after --depth");
+                    std::process::exit(1);
+                }
+                depth = args[index + 1].parse().unwrap_or(3);
+                index += 2;
+            }
+            "--mapping-quality" => {
+                if index + 1 >= args.len() {
+                    eprintln!("Missing value after --mapping-quality");
+                    std::process::exit(1);
+                }
+                mapping_quality = args[index + 1].parse().unwrap_or(0.8);
+                index += 2;
+            }
             "--seed-range" => {
                 if index + 2 >= args.len() {
                     eprintln!("Missing start/end after --seed-range");
@@ -54,15 +108,29 @@ fn main() {
         }
     }
 
+    let sim_options = olm::SimulationOptions {
+        generated_scenarios,
+        graph_size,
+        event_count,
+        prereq_density,
+        depth,
+        mapping_quality,
+    };
+
     if seeds.len() == 1 {
-        run_single(seeds[0], as_json, output_path);
+        run_single(seeds[0], as_json, output_path, sim_options);
     } else {
-        run_multi_seed(&seeds, output_path);
+        run_multi_seed(&seeds, output_path, sim_options);
     }
 }
 
-fn run_single(seed: u64, as_json: bool, output_path: Option<String>) {
-    match olm::olm_run_synthetic_scenarios_seeded(seed) {
+fn run_single(
+    seed: u64,
+    as_json: bool,
+    output_path: Option<String>,
+    sim_options: olm::SimulationOptions,
+) {
+    match olm::olm_run_synthetic_scenarios_seeded_with_options(seed, sim_options) {
         Ok(report) => {
             if as_json {
                 match serde_json::to_string_pretty(&report) {
@@ -94,11 +162,11 @@ fn run_single(seed: u64, as_json: bool, output_path: Option<String>) {
     }
 }
 
-fn run_multi_seed(seeds: &[u64], output_path: Option<String>) {
+fn run_multi_seed(seeds: &[u64], output_path: Option<String>, sim_options: olm::SimulationOptions) {
     let mut all_reports = Vec::new();
 
     for &seed in seeds {
-        match olm::olm_run_synthetic_scenarios_seeded(seed) {
+        match olm::olm_run_synthetic_scenarios_seeded_with_options(seed, sim_options.clone()) {
             Ok(report) => all_reports.push((seed, report)),
             Err(err) => {
                 eprintln!("Simulation failed for seed {}: {}", seed, err);
@@ -124,10 +192,22 @@ fn run_multi_seed(seeds: &[u64], output_path: Option<String>) {
 
         let n = approach_reports.len() as f64;
         let avg_pass = approach_reports.iter().map(|a| a.pass_rate).sum::<f64>() / n;
-        let avg_hit3 = approach_reports.iter().map(|a| a.hit_at_3_rate).sum::<f64>() / n;
+        let avg_hit3 = approach_reports
+            .iter()
+            .map(|a| a.hit_at_3_rate)
+            .sum::<f64>()
+            / n;
         let avg_mrr = approach_reports.iter().map(|a| a.avg_mrr).sum::<f64>() / n;
-        let avg_ndcg = approach_reports.iter().map(|a| a.avg_ndcg_at_3).sum::<f64>() / n;
-        let avg_test_pass = approach_reports.iter().map(|a| a.test_pass_rate).sum::<f64>() / n;
+        let avg_ndcg = approach_reports
+            .iter()
+            .map(|a| a.avg_ndcg_at_3)
+            .sum::<f64>()
+            / n;
+        let avg_test_pass = approach_reports
+            .iter()
+            .map(|a| a.test_pass_rate)
+            .sum::<f64>()
+            / n;
         let avg_test_mrr = approach_reports.iter().map(|a| a.test_avg_mrr).sum::<f64>() / n;
 
         println!(
@@ -207,9 +287,11 @@ fn print_report(report: &olm::SimulationReport) {
                 .unwrap_or_else(|| "none".to_string());
 
             println!(
-                "    {} {} -> top={} top3={:?} expected_any={:?} rank={:?} | hit@3={} mrr={:.3} ndcg@3={:.3} | hard={}/{} ranked={} excluded_min={} | avg_m={:.2} avg_u={:.2}",
+                "    {} {} [{} seed={}] -> top={} top3={:?} expected_any={:?} rank={:?} | hit@3={} mrr={:.3} ndcg@3={:.3} | hard={}/{} ranked={} excluded_min={} | avg_m={:.2} avg_u={:.2}",
                 status,
                 scenario.scenario_id,
+                scenario.scenario_metadata.mode,
+                scenario.scenario_metadata.seed,
                 top,
                 scenario.top_recommendations,
                 scenario.expected_any,
