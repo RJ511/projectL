@@ -394,19 +394,19 @@ $$
 alignment = clamp\left(1 - |objective - perceived\_score|, 0, 1\right)
 $$
 
-2. Se existir `objective` mas não `perceived_score`:
+1. Se existir `objective` mas não `perceived_score`:
 
 $$
 alignment = clamp\left(1 - |objective - confidence|, 0, 1\right)
 $$
 
-3. Se não existir `objective`, mas existir `perceived_score`:
+1. Se não existir `objective`, mas existir `perceived_score`:
 
 $$
 alignment = clamp\left(1 - |perceived\_score - confidence|, 0, 1\right)
 $$
 
-4. Sem sinais suficientes: `alignment = 0.5`.
+1. Sem sinais suficientes: `alignment = 0.5`.
 
 ### 12.3 Fator metacognitivo
 
@@ -450,7 +450,7 @@ Para reduzir sobre-ajuste por autoavaliações subjetivas, o runtime aplica quat
 - combina presença de sinal objetivo, confiança, alinhamento, histórico de evidência e cap por sessão;
 - quanto menor `r`, menor o impacto metacognitivo.
 
-2. **Shrink para neutro em baixa fiabilidade**:
+1. **Shrink para neutro em baixa fiabilidade**:
 
 $$
 s' = 0.5 + (s - 0.5) \cdot (0.4 + 0.6r)
@@ -458,12 +458,12 @@ $$
 
 onde `s` é o score bruto do evento e `s'` o score efetivo usado no update.
 
-3. **Blending com sinal objetivo (quando existir)**:
+1. **Blending com sinal objetivo (quando existir)**:
 
 - para eventos com evidência objetiva (`correct/total`), o score final puxa para o objetivo;
 - isto limita divergência quando percepção e desempenho real entram em conflito.
 
-4. **Cap por sessão para `self_assessment`**:
+1. **Cap por sessão para `self_assessment`**:
 
 - após várias autoavaliações no mesmo dia para o mesmo conceito, o efeito metacognitivo é reduzido;
 - evita inflação de influência por repetição de prompts.
@@ -533,7 +533,10 @@ Por approach, devolve:
   - `concept_event_counts`
   - `top_candidates` com score/readiness/mastery/uncertainty
 - `best_approach_id` no relatório final
-- bloco `calibration` (seleção no treino S1–S3 e leitura de generalização no teste S4–S6)
+- bloco `calibration`:
+  - em cenários canónicos, seleção no treino S1–S3 e leitura no teste S4–S6;
+  - em cenários gerados (`G*`), split automático 70/30 (treino/teste) por ordem de cenário;
+  - métrica de seleção: `train_pass_rate` (Hit@1) -> `train_avg_mrr` -> `hit_at_3_rate`.
 
 ---
 

@@ -123,15 +123,16 @@ Este e o documento tecnico canonico para arquitetura, logica OLM e decisoes de i
 - trocar dominio -> meta check-in,
 - ranking unico por dominio.
 
-5. Medir calibracao de `meta_strength` com cenarios sinteticos e logs reais anonimizados.
+1. Medir calibracao de `meta_strength` com cenarios sinteticos e logs reais anonimizados.
 
-6. Automatizar pipeline de calibracao e relatorio versionado em `docs/reports/`.
+2. Automatizar pipeline de calibracao e relatorio versionado em `docs/reports/`.
 
 Status atual:
 
 - Itens 1, 2, 3 e 4 implementados.
 - Item 6 implementado: script `scripts/calibrate-meta-strength.mjs` + `npm run calibrate:meta`.
 - Item 5 parcialmente implementado: calibracao sintetica pronta; falta integrar logs reais anonimizados na segunda fase de validacao.
+- A calibracao no simulador foi ajustada para priorizar `Hit@1` (`train_pass_rate`) e usar split adaptativo em cenarios gerados (70/30).
 
 ## 8. Decisoes de implementacao imediata
 

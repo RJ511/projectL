@@ -328,7 +328,7 @@ fn print_report(report: &olm::SimulationReport) {
             approach.train_avg_mrr,
             approach.test_avg_mrr
         );
-
+        
         for scenario in &approach.scenarios {
             let status = if scenario.pass { "PASS" } else { "FAIL" };
             let top = scenario

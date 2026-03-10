@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::cmp::Ordering;
 use std::collections::{HashMap, HashSet};
-use std::hash::{Hash, Hasher};
+use std::hash::{DefaultHasher, Hash, Hasher};
 use std::sync::Mutex;
 use tauri::State;
 
@@ -1270,12 +1270,12 @@ fn rank_next_to_study(
 
 fn scenario_ranking_metrics(
     ranked: &[NextToStudyItem],
-    expected_any: &[&str],
+    expected_any: &[String],
 ) -> (Option<usize>, bool, bool, f64, f64) {
     let rank_of_first_expected = ranked.iter().position(|item| {
         expected_any
             .iter()
-            .any(|expected| *expected == item.concept_id.as_str())
+            .any(|expected| expected == item.concept_id.as_str())
     });
 
     let hit_at_1 = rank_of_first_expected == Some(0);
@@ -1303,11 +1303,12 @@ fn scenario_ranking_metrics(
 
 fn aggregate_subset_metrics(
     scenarios: &[SimulationScenarioResult],
-    subset_ids: &[&str],
+    subset_ids: &[String],
 ) -> (f64, f64, f64, f64) {
+    let subset_id_set: HashSet<&str> = subset_ids.iter().map(|id| id.as_str()).collect();
     let subset: Vec<&SimulationScenarioResult> = scenarios
         .iter()
-        .filter(|scenario| subset_ids.contains(&scenario.scenario_id.as_str()))
+        .filter(|scenario| subset_id_set.contains(scenario.scenario_id.as_str()))
         .collect();
 
     if subset.is_empty() {
@@ -1325,6 +1326,29 @@ fn aggregate_subset_metrics(
         / size;
 
     (pass_rate, hit_at_3_rate, avg_mrr, avg_ndcg)
+}
+
+fn build_calibration_split(scenarios: &[ScenarioBlueprint]) -> (Vec<String>, Vec<String>) {
+    let ids: Vec<String> = scenarios.iter().map(|scenario| scenario.id.clone()).collect();
+    let id_set: HashSet<&str> = ids.iter().map(|id| id.as_str()).collect();
+
+    let has_canonical = ["S1", "S2", "S3", "S4", "S5", "S6"]
+        .iter()
+        .all(|id| id_set.contains(id));
+
+    if has_canonical {
+        return (
+            vec!["S1".to_string(), "S2".to_string(), "S3".to_string()],
+            vec!["S4".to_string(), "S5".to_string(), "S6".to_string()],
+        );
+    }
+
+    let split_idx = ((ids.len() as f64) * 0.7).round() as usize;
+    let split_idx = split_idx.clamp(1, ids.len().saturating_sub(1));
+
+    let train = ids[..split_idx].to_vec();
+    let test = ids[split_idx..].to_vec();
+    (train, test)
 }
 
 fn upsert_local_concept(store: &mut OlmStore, id: &str, name: &str) {
@@ -1404,6 +1428,25 @@ fn sample_event_type(rng: &mut StdRng, mix: &HashMap<String, f64>) -> String {
     "practice_attempt".to_string()
 }
 
+fn seeded_scenario_u64(seed: u64, scenario_id: &str) -> u64 {
+    let mut hasher = DefaultHasher::new();
+    seed.hash(&mut hasher);
+    scenario_id.hash(&mut hasher);
+    hasher.finish()
+}
+
+fn apply_seeded_scenario_noise(store: &mut OlmStore, seed: u64, scenario_id: &str) {
+    let mut rng = StdRng::seed_from_u64(seeded_scenario_u64(seed, scenario_id));
+
+    // Apply light deterministic perturbation so multi-seed runs are reproducible with small variance.
+    for state in store.concept_state.values_mut() {
+        let alpha_scale = rng.gen_range(0.98_f64..1.02_f64);
+        let beta_scale = rng.gen_range(0.98_f64..1.02_f64);
+        state.alpha = (state.alpha * alpha_scale).clamp(0.1, 1_000.0);
+        state.beta = (state.beta * beta_scale).clamp(0.1, 1_000.0);
+    }
+}
+
 fn baseline_scenario_blueprints(seed: u64) -> Vec<ScenarioBlueprint> {
     let concepts = vec![
         "foundation".to_string(),
@@ -1419,8 +1462,8 @@ fn baseline_scenario_blueprints(seed: u64) -> Vec<ScenarioBlueprint> {
         ("self_assessment".to_string(), 0.10),
     ]);
 
-    let make_meta = |id: &str,
-                     name: &str,
+    let make_meta = |_id: &str,
+                     _name: &str,
                      error_rate: f64,
                      meta: f64,
                      mapping_quality: f64,
@@ -1796,12 +1839,24 @@ fn generated_scenario_blueprints(seed: u64, options: &SimulationOptions) -> Vec<
                 title: format!("Generated Lesson {}", content_idx + 1),
                 domain_id: None,
             });
-            for concept_id in concepts.iter().filter(|_| local_rng.gen_bool(0.5)) {
+            let mut selected_concepts: Vec<String> = Vec::new();
+            for concept_id in &concepts {
+                if local_rng.gen_bool(0.5) {
+                    selected_concepts.push(concept_id.clone());
+                }
+            }
+
+            if selected_concepts.is_empty() {
+                let fallback_idx = local_rng.gen_range(0..concepts.len());
+                selected_concepts.push(concepts[fallback_idx].clone());
+            }
+
+            for concept_id in selected_concepts {
                 let weight =
                     (local_rng.gen_range(0.2_f64..1.0_f64) * mapping_quality).clamp(0.05, 1.0);
                 content_concepts.push(ContentConceptMap {
                     content_id: content_id.clone(),
-                    concept_id: concept_id.clone(),
+                    concept_id,
                     coverage_weight: weight,
                 });
             }
@@ -2245,8 +2300,7 @@ pub fn olm_run_synthetic_scenarios_seeded_with_options(
 ) -> Result<SimulationReport, String> {
     let scenarios = build_simulation_scenarios(seed, &options);
     let approaches = approach_definitions();
-    let train_split = ["S1", "S2", "S3"];
-    let test_split = ["S4", "S5", "S6"];
+    let (train_split, test_split) = build_calibration_split(&scenarios);
 
     // Seed now perturbs scenario states (deterministic per seed/scenario), enabling
     // reproducible variability across multi-seed simulation runs.
@@ -2301,7 +2355,7 @@ pub fn olm_run_synthetic_scenarios_seeded_with_options(
             scenario_results.push(SimulationScenarioResult {
                 scenario_id: scenario.id.to_string(),
                 scenario_name: scenario.name.to_string(),
-                expected_any: scenario.expected_any.iter().map(|s| s.to_string()).collect(),
+                expected_any: scenario.expected_any.clone(),
                 scenario_metadata: scenario.metadata.clone(),
                 top_recommendation,
                 top_recommendations,
@@ -2385,17 +2439,17 @@ pub fn olm_run_synthetic_scenarios_seeded_with_options(
     let selected_for_calibration = approach_reports
         .iter()
         .max_by(|a, b| {
-            a.train_avg_mrr
-                .partial_cmp(&b.train_avg_mrr)
+            a.train_pass_rate
+                .partial_cmp(&b.train_pass_rate)
                 .unwrap_or(Ordering::Equal)
                 .then_with(|| {
-                    a.hit_at_3_rate
-                        .partial_cmp(&b.hit_at_3_rate)
+                    a.train_avg_mrr
+                        .partial_cmp(&b.train_avg_mrr)
                         .unwrap_or(Ordering::Equal)
                 })
                 .then_with(|| {
-                    a.train_pass_rate
-                        .partial_cmp(&b.train_pass_rate)
+                    a.hit_at_3_rate
+                        .partial_cmp(&b.hit_at_3_rate)
                         .unwrap_or(Ordering::Equal)
                 })
         })
@@ -2403,9 +2457,9 @@ pub fn olm_run_synthetic_scenarios_seeded_with_options(
 
     let calibration = if let Some(selected) = selected_for_calibration {
         SimulationCalibrationSummary {
-            train_scenarios: train_split.iter().map(|id| id.to_string()).collect(),
-            test_scenarios: test_split.iter().map(|id| id.to_string()).collect(),
-            selection_metric: "train_avg_mrr_then_hit_at_3_rate_then_train_pass_rate".to_string(),
+            train_scenarios: train_split.clone(),
+            test_scenarios: test_split.clone(),
+            selection_metric: "train_pass_rate_then_train_avg_mrr_then_hit_at_3_rate".to_string(),
             selected_approach_id: selected.approach_id,
             selected_test_pass_rate: selected.test_pass_rate,
             selected_test_avg_mrr: selected.test_avg_mrr,
