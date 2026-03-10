@@ -208,6 +208,7 @@ pub struct SimulationOptions {
     pub prereq_density: f64,
     pub depth: usize,
     pub mapping_quality: f64,
+    pub scenario_mode: String,
 }
 
 impl Default for SimulationOptions {
@@ -219,6 +220,7 @@ impl Default for SimulationOptions {
             prereq_density: 0.35,
             depth: 3,
             mapping_quality: 0.8,
+            scenario_mode: "mixed".to_string(),
         }
     }
 }
@@ -1913,9 +1915,17 @@ fn generated_scenario_blueprints(seed: u64, options: &SimulationOptions) -> Vec<
 }
 
 fn build_simulation_scenarios(seed: u64, options: &SimulationOptions) -> Vec<ScenarioBlueprint> {
-    let mut scenarios = baseline_scenario_blueprints(seed);
-    scenarios.extend(generated_scenario_blueprints(seed, options));
-    scenarios
+    let mode = options.scenario_mode.trim().to_ascii_lowercase();
+
+    match mode.as_str() {
+        "canonical" | "baseline" => baseline_scenario_blueprints(seed),
+        "generated" => generated_scenario_blueprints(seed, options),
+        _ => {
+            let mut scenarios = baseline_scenario_blueprints(seed);
+            scenarios.extend(generated_scenario_blueprints(seed, options));
+            scenarios
+        }
+    }
 }
 
 fn materialize_scenario(
@@ -3431,5 +3441,35 @@ mod tests {
 
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].content_id, "math/item-a");
+    }
+
+    #[test]
+    fn test_build_simulation_scenarios_generated_mode_only_returns_generated() {
+        let options = SimulationOptions {
+            generated_scenarios: 3,
+            scenario_mode: "generated".to_string(),
+            ..SimulationOptions::default()
+        };
+
+        let scenarios = build_simulation_scenarios(11, &options);
+        assert_eq!(scenarios.len(), 3);
+        assert!(scenarios
+            .iter()
+            .all(|scenario| scenario.metadata.mode == "generated"));
+    }
+
+    #[test]
+    fn test_build_simulation_scenarios_canonical_mode_only_returns_baseline() {
+        let options = SimulationOptions {
+            generated_scenarios: 10,
+            scenario_mode: "canonical".to_string(),
+            ..SimulationOptions::default()
+        };
+
+        let scenarios = build_simulation_scenarios(7, &options);
+        assert_eq!(scenarios.len(), 6);
+        assert!(scenarios
+            .iter()
+            .all(|scenario| scenario.metadata.mode == "baseline"));
     }
 }

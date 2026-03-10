@@ -491,6 +491,15 @@ Execução:
 - `cargo run --bin olm_sim -- --json` (output JSON)
 - `cargo run --bin olm_sim -- --save` (guarda em `results.json`)
 - `cargo run --bin olm_sim -- --out results.json` (guarda no ficheiro indicado)
+- `cargo run --bin olm_sim -- --profile quick --seed-range 0 19` (arranque rápido com diversidade)
+- `cargo run --bin olm_sim -- --profile stress --scenario-mode generated --seeds 50` (somente cenários gerados)
+
+Parâmetros úteis para gerar muitos casos distintos rapidamente:
+
+- `--profile quick|balanced|stress` (presets de volume/densidade)
+- `--generated-scenarios N` (quantidade adicional de cenários sintéticos)
+- `--graph-size N`, `--event-count N`, `--prereq-density X`, `--depth N`, `--mapping-quality X`
+- `--scenario-mode mixed|canonical|generated` (misto, apenas cenários canónicos, ou apenas gerados)
 
 ### 13.1 Approaches atuais
 
