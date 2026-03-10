@@ -13,6 +13,7 @@ fn main() {
     let mut prereq_density: f64 = 0.35;
     let mut depth: usize = 3;
     let mut mapping_quality: f64 = 0.8;
+    let mut scenario_mode = "mixed".to_string();
 
     let mut index = 1usize;
     while index < args.len() {
@@ -50,6 +51,46 @@ fn main() {
                     std::process::exit(1);
                 }
                 generated_scenarios = args[index + 1].parse().unwrap_or(0);
+                index += 2;
+            }
+            "--profile" => {
+                if index + 1 >= args.len() {
+                    eprintln!("Missing profile after --profile");
+                    std::process::exit(1);
+                }
+                match args[index + 1].as_str() {
+                    "quick" => {
+                        generated_scenarios = 8;
+                        graph_size = 6;
+                        event_count = 20;
+                        prereq_density = 0.30;
+                        depth = 3;
+                        mapping_quality = 0.75;
+                    }
+                    "balanced" => {
+                        generated_scenarios = 24;
+                        graph_size = 8;
+                        event_count = 32;
+                        prereq_density = 0.38;
+                        depth = 4;
+                        mapping_quality = 0.80;
+                    }
+                    "stress" => {
+                        generated_scenarios = 60;
+                        graph_size = 12;
+                        event_count = 48;
+                        prereq_density = 0.45;
+                        depth = 5;
+                        mapping_quality = 0.88;
+                    }
+                    other => {
+                        eprintln!(
+                            "Unknown profile '{}'. Use: quick | balanced | stress",
+                            other
+                        );
+                        std::process::exit(1);
+                    }
+                }
                 index += 2;
             }
             "--graph-size" => {
@@ -92,6 +133,14 @@ fn main() {
                 mapping_quality = args[index + 1].parse().unwrap_or(0.8);
                 index += 2;
             }
+            "--scenario-mode" => {
+                if index + 1 >= args.len() {
+                    eprintln!("Missing value after --scenario-mode");
+                    std::process::exit(1);
+                }
+                scenario_mode = args[index + 1].clone();
+                index += 2;
+            }
             "--seed-range" => {
                 if index + 2 >= args.len() {
                     eprintln!("Missing start/end after --seed-range");
@@ -115,6 +164,7 @@ fn main() {
         prereq_density,
         depth,
         mapping_quality,
+        scenario_mode,
     };
 
     if seeds.len() == 1 {
