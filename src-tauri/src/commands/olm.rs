@@ -1,10 +1,10 @@
 #![allow(dead_code)]
 
+use chrono::{DateTime, Utc};
+use rand::rngs::StdRng;
+use rand::{Rng, SeedableRng};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use rand::{Rng, SeedableRng};
-use rand::rngs::StdRng;
-use chrono::{DateTime, Utc};
 use std::cmp::Ordering;
 use std::collections::{HashMap, HashSet};
 use std::hash::{Hash, Hasher};
@@ -187,9 +187,9 @@ struct ContentMappingQuality {
 
 #[derive(Debug, Clone)]
 struct ApproachConfig {
-    id: &'static str,
-    name: &'static str,
-    description: &'static str,
+    id: String,
+    name: String,
+    description: String,
     lambda: f64,
     readiness_threshold: f64,
     min_readiness: f64,
@@ -198,6 +198,21 @@ struct ApproachConfig {
     meta_strength: f64,
     soft_gate_k: Option<f64>,
     stop_mastery: f64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SimulationApproachConfig {
+    pub id: String,
+    pub name: String,
+    pub description: String,
+    pub lambda: f64,
+    pub theta: f64,
+    pub min_readiness: f64,
+    pub gamma: f64,
+    pub root_penalty: f64,
+    pub meta_strength: f64,
+    pub soft_gate_k: Option<f64>,
+    pub stop_mastery: f64,
 }
 
 #[derive(Debug, Clone)]
@@ -329,7 +344,9 @@ fn normalized_weights(raw: &[(String, f64)]) -> Vec<(String, f64)> {
         return Vec::new();
     }
 
-    acc.into_iter().map(|(id, weight)| (id, weight / total)).collect()
+    acc.into_iter()
+        .map(|(id, weight)| (id, weight / total))
+        .collect()
 }
 
 fn content_mapping_quality(raw_weight_sum: f64, mapped_concepts: usize) -> ContentMappingQuality {
@@ -461,7 +478,8 @@ fn event_score(event: &StudyEvent) -> f64 {
         }
         "study_read" => {
             let duration = parse_payload_float(&event.payload, "duration_sec").unwrap_or(0.0);
-            let target = parse_payload_float(&event.payload, "target_duration_sec").unwrap_or(600.0);
+            let target =
+                parse_payload_float(&event.payload, "target_duration_sec").unwrap_or(600.0);
             if target <= 0.0 {
                 0.0
             } else {
@@ -470,7 +488,8 @@ fn event_score(event: &StudyEvent) -> f64 {
         }
         "review" => {
             let duration = parse_payload_float(&event.payload, "duration_sec").unwrap_or(0.0);
-            let target = parse_payload_float(&event.payload, "target_duration_sec").unwrap_or(600.0);
+            let target =
+                parse_payload_float(&event.payload, "target_duration_sec").unwrap_or(600.0);
             if target <= 0.0 {
                 0.0
             } else {
@@ -732,7 +751,9 @@ fn ingest_into_store(
 
     let mapped_concepts = normalize_maps(store, event);
     if mapped_concepts.is_empty() {
-        return Err("Event must include concept_ids or a content_id mapped to concepts".to_string());
+        return Err(
+            "Event must include concept_ids or a content_id mapped to concepts".to_string(),
+        );
     }
 
     store.study_events.push(event.clone());
@@ -748,11 +769,7 @@ fn ingest_into_store(
             continue;
         }
 
-        let prior_entries = store
-            .evidence
-            .get(&concept_id)
-            .cloned()
-            .unwrap_or_default();
+        let prior_entries = store.evidence.get(&concept_id).cloned().unwrap_or_default();
         let prior_evidence_count = prior_entries.len();
         let prior_self_assessment_same_day =
             count_self_assessment_same_day(&prior_entries, &event.timestamp);
@@ -956,11 +973,19 @@ fn next_content_to_study_from_store(
 
             let readable_concepts: Vec<String> = supporting_concepts
                 .iter()
-                .map(|cid| concept_name_by_id.get(cid).cloned().unwrap_or_else(|| cid.clone()))
+                .map(|cid| {
+                    concept_name_by_id
+                        .get(cid)
+                        .cloned()
+                        .unwrap_or_else(|| cid.clone())
+                })
                 .collect();
 
             let why = vec![
-                format!("Conceitos prioritários relacionados: {}", readable_concepts.join(", ")),
+                format!(
+                    "Conceitos prioritários relacionados: {}",
+                    readable_concepts.join(", ")
+                ),
                 format!("Prioridade agregada por conceito: {:.3}", concept_signal),
                 format!(
                     "Qualidade do mapeamento: {:.2} (peso_total={:.2}, conceitos={})",
@@ -972,12 +997,18 @@ fn next_content_to_study_from_store(
                     "Penalização por mapeamento fraco: x{:.2}",
                     mapping_quality.penalty
                 ),
-                format!("Histórico do item: avg_score={:.2}, attempts={}", avg_score, attempts),
+                format!(
+                    "Histórico do item: avg_score={:.2}, attempts={}",
+                    avg_score, attempts
+                ),
             ];
 
             Some(NextContentToStudyItem {
                 content_id: content_id.clone(),
-                title: store.content_items.get(&content_id).map(|item| item.title.clone()),
+                title: store
+                    .content_items
+                    .get(&content_id)
+                    .map(|item| item.title.clone()),
                 score: final_score,
                 attempts,
                 avg_score,
@@ -1066,10 +1097,8 @@ fn rank_next_to_study(
 
         candidates_before_gate += 1;
 
-        let (concept_mastery, concept_uncertainty) = state_by_id
-            .get(&concept.id)
-            .copied()
-            .unwrap_or((0.5, 1.0));
+        let (concept_mastery, concept_uncertainty) =
+            state_by_id.get(&concept.id).copied().unwrap_or((0.5, 1.0));
 
         let prereqs: Vec<&ConceptEdge> = store
             .edges
@@ -1088,7 +1117,10 @@ fn rank_next_to_study(
             prereqs
                 .iter()
                 .map(|edge| {
-                    let (m, u) = state_by_id.get(&edge.prereq_id).copied().unwrap_or((0.5, 1.0));
+                    let (m, u) = state_by_id
+                        .get(&edge.prereq_id)
+                        .copied()
+                        .unwrap_or((0.5, 1.0));
                     prereq_readiness(m, u, gamma)
                 })
                 .fold(1.0, f64::min)
@@ -1227,7 +1259,13 @@ fn scenario_ranking_metrics(
         _ => 0.0,
     };
 
-    (rank_of_first_expected.map(|idx| idx + 1), hit_at_1, hit_at_3, mrr, ndcg_at_3)
+    (
+        rank_of_first_expected.map(|idx| idx + 1),
+        hit_at_1,
+        hit_at_3,
+        mrr,
+        ndcg_at_3,
+    )
 }
 
 fn aggregate_subset_metrics(
@@ -1245,11 +1283,7 @@ fn aggregate_subset_metrics(
 
     let size = subset.len() as f64;
     let pass_rate = subset.iter().filter(|scenario| scenario.pass).count() as f64 / size;
-    let hit_at_3_rate = subset
-        .iter()
-        .filter(|scenario| scenario.hit_at_3)
-        .count() as f64
-        / size;
+    let hit_at_3_rate = subset.iter().filter(|scenario| scenario.hit_at_3).count() as f64 / size;
     let avg_mrr = subset.iter().map(|scenario| scenario.mrr).sum::<f64>() / size;
     let avg_ndcg = subset
         .iter()
@@ -1669,12 +1703,12 @@ fn scenario_definitions() -> Vec<ScenarioDefinition> {
     ]
 }
 
-fn approach_definitions() -> Vec<ApproachConfig> {
+fn default_approach_definitions() -> Vec<ApproachConfig> {
     vec![
         ApproachConfig {
-            id: "baseline",
-            name: "Baseline",
-            description: "Sem uso metacognitivo (meta_strength=0)",
+            id: "baseline".to_string(),
+            name: "Baseline".to_string(),
+            description: "Sem uso metacognitivo (meta_strength=0)".to_string(),
             lambda: 0.7,
             readiness_threshold: 0.5,
             min_readiness: 0.1,
@@ -1685,9 +1719,9 @@ fn approach_definitions() -> Vec<ApproachConfig> {
             stop_mastery: 0.99,
         },
         ApproachConfig {
-            id: "metacog_balanced",
-            name: "Metacognitive Balanced",
-            description: "Ponderação metacognitiva moderada",
+            id: "metacog_balanced".to_string(),
+            name: "Metacognitive Balanced".to_string(),
+            description: "Ponderação metacognitiva moderada".to_string(),
             lambda: 0.7,
             readiness_threshold: 0.5,
             min_readiness: 0.1,
@@ -1698,9 +1732,9 @@ fn approach_definitions() -> Vec<ApproachConfig> {
             stop_mastery: 0.99,
         },
         ApproachConfig {
-            id: "metacog_strict",
-            name: "Metacognitive Strict",
-            description: "Ponderação metacognitiva forte + gating mais exigente",
+            id: "metacog_strict".to_string(),
+            name: "Metacognitive Strict".to_string(),
+            description: "Ponderação metacognitiva forte + gating mais exigente".to_string(),
             lambda: 0.65,
             readiness_threshold: 0.55,
             min_readiness: 0.1,
@@ -1711,6 +1745,31 @@ fn approach_definitions() -> Vec<ApproachConfig> {
             stop_mastery: 0.99,
         },
     ]
+}
+
+fn approach_definitions(configs: Option<&[SimulationApproachConfig]>) -> Vec<ApproachConfig> {
+    if let Some(custom) = configs {
+        if !custom.is_empty() {
+            return custom
+                .iter()
+                .map(|config| ApproachConfig {
+                    id: config.id.clone(),
+                    name: config.name.clone(),
+                    description: config.description.clone(),
+                    lambda: config.lambda,
+                    readiness_threshold: config.theta,
+                    min_readiness: config.min_readiness,
+                    readiness_gamma: config.gamma,
+                    root_penalty: config.root_penalty,
+                    meta_strength: config.meta_strength,
+                    soft_gate_k: config.soft_gate_k,
+                    stop_mastery: config.stop_mastery,
+                })
+                .collect();
+        }
+    }
+
+    default_approach_definitions()
 }
 
 fn average_state(store: &OlmStore) -> (f64, f64) {
@@ -1766,7 +1825,8 @@ pub fn olm_add_edge(state: State<OlmState>, edge: ConceptEdge) -> Result<Concept
     }
 
     let mut store = state.inner.lock().map_err(|_| "State lock poisoned")?;
-    if !store.concepts.contains_key(&edge.prereq_id) || !store.concepts.contains_key(&edge.target_id)
+    if !store.concepts.contains_key(&edge.prereq_id)
+        || !store.concepts.contains_key(&edge.target_id)
     {
         return Err("Both concepts must exist before creating an edge".to_string());
     }
@@ -1873,15 +1933,16 @@ pub fn olm_get_state(state: State<OlmState>) -> Result<Vec<ConceptStateView>, St
         .concepts
         .values()
         .map(|concept| {
-            let concept_state = store
-                .concept_state
-                .get(&concept.id)
-                .cloned()
-                .unwrap_or(ConceptState {
-                    alpha: 1.0,
-                    beta: 1.0,
-                    last_update: None,
-                });
+            let concept_state =
+                store
+                    .concept_state
+                    .get(&concept.id)
+                    .cloned()
+                    .unwrap_or(ConceptState {
+                        alpha: 1.0,
+                        beta: 1.0,
+                        last_update: None,
+                    });
             let effective_state = decay_state_if_needed(&concept_state, &store.config);
 
             ConceptStateView {
@@ -1949,8 +2010,22 @@ pub fn olm_run_synthetic_scenarios() -> Result<SimulationReport, String> {
 }
 
 pub fn olm_run_synthetic_scenarios_seeded(seed: u64) -> Result<SimulationReport, String> {
+    run_synthetic_scenarios(seed, None)
+}
+
+pub fn olm_run_synthetic_scenarios_seeded_with_approaches(
+    seed: u64,
+    approach_configs: &[SimulationApproachConfig],
+) -> Result<SimulationReport, String> {
+    run_synthetic_scenarios(seed, Some(approach_configs))
+}
+
+fn run_synthetic_scenarios(
+    seed: u64,
+    approach_configs: Option<&[SimulationApproachConfig]>,
+) -> Result<SimulationReport, String> {
     let scenarios = scenario_definitions();
-    let approaches = approach_definitions();
+    let approaches = approach_definitions(approach_configs);
     let train_split = ["S1", "S2", "S3"];
     let test_split = ["S4", "S5", "S6"];
 
@@ -2079,7 +2154,11 @@ pub fn olm_run_synthetic_scenarios_seeded(seed: u64) -> Result<SimulationReport,
 
     let best_approach_id = approach_reports
         .iter()
-        .max_by(|a, b| a.pass_rate.partial_cmp(&b.pass_rate).unwrap_or(Ordering::Equal))
+        .max_by(|a, b| {
+            a.pass_rate
+                .partial_cmp(&b.pass_rate)
+                .unwrap_or(Ordering::Equal)
+        })
         .map(|report| report.approach_id.clone())
         .unwrap_or_else(|| "none".to_string());
 
@@ -2197,8 +2276,7 @@ pub fn olm_save_state(
             .path()
             .app_data_dir()
             .map_err(|e| format!("App data dir error: {}", e))?;
-        std::fs::create_dir_all(&data_dir)
-            .map_err(|e| format!("Create dir error: {}", e))?;
+        std::fs::create_dir_all(&data_dir).map_err(|e| format!("Create dir error: {}", e))?;
         data_dir.join("olm_state.json")
     };
 
@@ -2229,8 +2307,7 @@ pub fn olm_load_state(
         return Err(format!("State file not found: {}", file_path.display()));
     }
 
-    let json = std::fs::read_to_string(&file_path)
-        .map_err(|e| format!("Read error: {}", e))?;
+    let json = std::fs::read_to_string(&file_path).map_err(|e| format!("Read error: {}", e))?;
     let snapshot: OlmSnapshot =
         serde_json::from_str(&json).map_err(|e| format!("Deserialization error: {}", e))?;
 
@@ -2484,20 +2561,32 @@ mod tests {
         let st = store.concept_state.get("c1").unwrap();
         assert!(st.alpha > 1.0, "alpha should increase after correct answer");
         assert!(st.beta >= 1.0, "beta should not drop below initial");
-        assert!(st.alpha <= 3.0, "alpha should be reasonable after one event");
+        assert!(
+            st.alpha <= 3.0,
+            "alpha should be reasonable after one event"
+        );
     }
 
     #[test]
     fn test_metacognitive_weight_zero_strength() {
-        let e = make_event("quiz_attempt", json!({"correct": 1.0, "total": 1.0, "confidence": 0.8}));
+        let e = make_event(
+            "quiz_attempt",
+            json!({"correct": 1.0, "total": 1.0, "confidence": 0.8}),
+        );
         let meta = metacognitive_signal(&e, Some(1.0), 1.0, 0.0, 0, 0);
-        assert_eq!(meta.effective_weight, 1.0, "meta_strength=0 should give weight=1.0");
+        assert_eq!(
+            meta.effective_weight, 1.0,
+            "meta_strength=0 should give weight=1.0"
+        );
         assert!((meta.effective_score - 1.0).abs() < 1e-9);
     }
 
     #[test]
     fn test_metacognitive_session_cap_reduces_reliability() {
-        let e = make_event("self_assessment", json!({"score": 1.0, "confidence": 0.9, "effort": 0.8}));
+        let e = make_event(
+            "self_assessment",
+            json!({"score": 1.0, "confidence": 0.9, "effort": 0.8}),
+        );
         let no_cap = metacognitive_signal(&e, None, 1.0, 0.6, 5, 0);
         let with_cap = metacognitive_signal(&e, None, 1.0, 0.6, 5, 6);
 
@@ -2509,14 +2598,20 @@ mod tests {
 
     #[test]
     fn test_metacognitive_low_reliability_shrinks_score_towards_neutral() {
-        let e = make_event("self_assessment", json!({"score": 1.0, "confidence": 0.05, "effort": 0.2}));
+        let e = make_event(
+            "self_assessment",
+            json!({"score": 1.0, "confidence": 0.05, "effort": 0.2}),
+        );
         let meta = metacognitive_signal(&e, None, 1.0, 0.8, 0, 8);
 
         assert!(
             meta.effective_score < 0.9,
             "low reliability should shrink effective score away from extreme values"
         );
-        assert!(meta.effective_score > 0.5, "effective score should stay above neutral for raw score=1");
+        assert!(
+            meta.effective_score > 0.5,
+            "effective score should stay above neutral for raw score=1"
+        );
     }
 
     #[test]
@@ -2533,14 +2628,44 @@ mod tests {
 
         let exclude = HashSet::new();
         // Without penalty
-        let (ranked_no_penalty, _) =
-            rank_next_to_study(&store, None, 0.7, 0.5, 0.1, 0.35, Some(1.6), 0.0, 0.99, &exclude, None, "standard");
+        let (ranked_no_penalty, _) = rank_next_to_study(
+            &store,
+            None,
+            0.7,
+            0.5,
+            0.1,
+            0.35,
+            Some(1.6),
+            0.0,
+            0.99,
+            &exclude,
+            None,
+            "standard",
+        );
         // With penalty=0.5
-        let (ranked_penalty, _) =
-            rank_next_to_study(&store, None, 0.7, 0.5, 0.1, 0.35, Some(1.6), 0.5, 0.99, &exclude, None, "standard");
+        let (ranked_penalty, _) = rank_next_to_study(
+            &store,
+            None,
+            0.7,
+            0.5,
+            0.1,
+            0.35,
+            Some(1.6),
+            0.5,
+            0.99,
+            &exclude,
+            None,
+            "standard",
+        );
 
-        let root_no_penalty = ranked_no_penalty.iter().find(|i| i.concept_id == "root").unwrap();
-        let root_penalty = ranked_penalty.iter().find(|i| i.concept_id == "root").unwrap();
+        let root_no_penalty = ranked_no_penalty
+            .iter()
+            .find(|i| i.concept_id == "root")
+            .unwrap();
+        let root_penalty = ranked_penalty
+            .iter()
+            .find(|i| i.concept_id == "root")
+            .unwrap();
 
         assert!(
             root_penalty.score < root_no_penalty.score,
@@ -2573,8 +2698,20 @@ mod tests {
 
         let exclude = HashSet::new();
         // stop_mastery=0.7 → root mastery (0.91) > 0.7 → excluded
-        let (ranked, _) =
-            rank_next_to_study(&store, None, 0.7, 0.5, 0.1, 0.35, Some(1.6), 0.12, 0.7, &exclude, None, "standard");
+        let (ranked, _) = rank_next_to_study(
+            &store,
+            None,
+            0.7,
+            0.5,
+            0.1,
+            0.35,
+            Some(1.6),
+            0.12,
+            0.7,
+            &exclude,
+            None,
+            "standard",
+        );
 
         assert!(
             ranked.iter().all(|i| i.concept_id != "root"),
@@ -2604,8 +2741,20 @@ mod tests {
         );
 
         let exclude = HashSet::new();
-        let (ranked, _) =
-            rank_next_to_study(&store, None, 0.7, 0.5, 0.1, 0.35, Some(1.6), 0.12, 0.7, &exclude, None, "standard");
+        let (ranked, _) = rank_next_to_study(
+            &store,
+            None,
+            0.7,
+            0.5,
+            0.1,
+            0.35,
+            Some(1.6),
+            0.12,
+            0.7,
+            &exclude,
+            None,
+            "standard",
+        );
 
         assert!(
             ranked.iter().any(|i| i.concept_id == "root"),
@@ -2636,8 +2785,20 @@ mod tests {
         let mut exclude = HashSet::new();
         exclude.insert("c1".to_string());
 
-        let (ranked, _) =
-            rank_next_to_study(&store, None, 0.7, 0.5, 0.1, 0.35, Some(1.6), 0.12, 0.99, &exclude, None, "standard");
+        let (ranked, _) = rank_next_to_study(
+            &store,
+            None,
+            0.7,
+            0.5,
+            0.1,
+            0.35,
+            Some(1.6),
+            0.12,
+            0.99,
+            &exclude,
+            None,
+            "standard",
+        );
 
         assert!(
             ranked.iter().all(|i| i.concept_id != "c1"),
@@ -2681,8 +2842,20 @@ mod tests {
         );
 
         let exclude = HashSet::new();
-        let (ranked, _) =
-            rank_next_to_study(&store, None, 0.7, 0.5, 0.1, 0.35, Some(1.6), 0.12, 0.99, &exclude, Some("math"), "standard");
+        let (ranked, _) = rank_next_to_study(
+            &store,
+            None,
+            0.7,
+            0.5,
+            0.1,
+            0.35,
+            Some(1.6),
+            0.12,
+            0.99,
+            &exclude,
+            Some("math"),
+            "standard",
+        );
 
         assert!(
             ranked.iter().all(|i| i.concept_id.starts_with("math")),
@@ -2775,17 +2948,44 @@ mod tests {
 
         let exclude = HashSet::new();
         // k=2 soft gate
-        let (ranked_soft, _) =
-            rank_next_to_study(&store, None, 0.7, 0.5, 0.1, 0.35, Some(2.0), 0.0, 0.99, &exclude, None, "standard");
+        let (ranked_soft, _) = rank_next_to_study(
+            &store,
+            None,
+            0.7,
+            0.5,
+            0.1,
+            0.35,
+            Some(2.0),
+            0.0,
+            0.99,
+            &exclude,
+            None,
+            "standard",
+        );
         // k=3 strict gate
-        let (ranked_strict, _) =
-            rank_next_to_study(&store, None, 0.7, 0.5, 0.1, 0.35, Some(3.0), 0.0, 0.99, &exclude, None, "standard");
+        let (ranked_strict, _) = rank_next_to_study(
+            &store,
+            None,
+            0.7,
+            0.5,
+            0.1,
+            0.35,
+            Some(3.0),
+            0.0,
+            0.99,
+            &exclude,
+            None,
+            "standard",
+        );
 
         let target_soft = ranked_soft.iter().find(|i| i.concept_id == "target");
         let target_strict = ranked_strict.iter().find(|i| i.concept_id == "target");
 
         assert!(target_soft.is_some(), "target should appear in soft gating");
-        assert!(target_strict.is_some(), "target should appear in strict gating");
+        assert!(
+            target_strict.is_some(),
+            "target should appear in strict gating"
+        );
         assert!(
             target_soft.unwrap().score >= target_strict.unwrap().score,
             "soft gating (k=2) should give higher score than strict (k=3) for unready concept"
@@ -2902,8 +3102,7 @@ mod tests {
             }),
         };
 
-        ingest_into_store(&mut store, &event, 0.6)
-            .expect("test_end self_assessment should ingest");
+        ingest_into_store(&mut store, &event, 0.6).expect("test_end self_assessment should ingest");
 
         assert_eq!(store.study_events.len(), 1);
         assert_eq!(
