@@ -111,10 +111,10 @@ export function nextContentToStudy(options = {}) {
     lambda,
     readinessThreshold,
     readiness_threshold,
+    domainId,
+    domain_id,
     domainFilter,
     domain_filter,
-    contentPrefix,
-    content_prefix,
     exclude,
   } = options;
 
@@ -123,7 +123,7 @@ export function nextContentToStudy(options = {}) {
     lambda,
     readiness_threshold: readinessThreshold ?? readiness_threshold,
     domain_filter: domainFilter ?? domain_filter,
-    content_prefix: contentPrefix ?? content_prefix,
+    domain_id: domainId ?? domain_id,
     exclude,
   });
 }

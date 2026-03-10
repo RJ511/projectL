@@ -385,6 +385,7 @@ export function useFileSystem(rootPath) {
         id: effectiveContentId,
         item_type: "reflection",
         title: `Meta reflection: ${domain || "root"}`,
+        domain_id: safeDomain,
       });
       await mapContentConcept({
         content_id: effectiveContentId,
@@ -732,6 +733,7 @@ export function useFileSystem(rootPath) {
         id: contentId,
         item_type: "note",
         title: node.name,
+        domain_id: profile.domainId,
       });
       await mapContentConcept({
         content_id: contentId,

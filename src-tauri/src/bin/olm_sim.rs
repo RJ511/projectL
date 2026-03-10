@@ -1,5 +1,6 @@
-#[path = "../commands/mod.rs"]
-mod commands;
+#[path = "../commands/olm.rs"]
+#[allow(dead_code)]
+mod olm;
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
@@ -61,7 +62,7 @@ fn main() {
 }
 
 fn run_single(seed: u64, as_json: bool, output_path: Option<String>) {
-    match commands::olm_run_synthetic_scenarios_seeded(seed) {
+    match olm::olm_run_synthetic_scenarios_seeded(seed) {
         Ok(report) => {
             if as_json {
                 match serde_json::to_string_pretty(&report) {
@@ -97,7 +98,7 @@ fn run_multi_seed(seeds: &[u64], output_path: Option<String>) {
     let mut all_reports = Vec::new();
 
     for &seed in seeds {
-        match commands::olm_run_synthetic_scenarios_seeded(seed) {
+        match olm::olm_run_synthetic_scenarios_seeded(seed) {
             Ok(report) => all_reports.push((seed, report)),
             Err(err) => {
                 eprintln!("Simulation failed for seed {}: {}", seed, err);
@@ -167,7 +168,7 @@ fn run_multi_seed(seeds: &[u64], output_path: Option<String>) {
     }
 }
 
-fn print_report(report: &commands::SimulationReport) {
+fn print_report(report: &olm::SimulationReport) {
     println!("OLM Synthetic Simulation Report");
     println!("Scenarios: {}", report.scenarios_count);
     println!("Best approach: {}", report.best_approach_id);

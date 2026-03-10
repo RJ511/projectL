@@ -1,5 +1,16 @@
-import { createFolder, readFile, writeFile } from "./fs.service";
-import { rootAppStateRelPath, ROOT_DATA_DIR } from "./dataPolicy";
+import {
+  createFolder,
+  deletePath,
+  readFile,
+  renameFile,
+  writeFile,
+} from "./fs.service";
+import {
+  rootAppStateBackupRelPath,
+  rootAppStateRelPath,
+  rootAppStateTempRelPath,
+  ROOT_DATA_DIR,
+} from "./dataPolicy";
 
 function safeJsonParse(raw, fallback) {
   try {
@@ -20,23 +31,74 @@ async function ensureDataDir(rootPath) {
 
 export async function loadRootState(rootPath) {
   if (!rootPath) return {};
+
+  const mainPath = rootAppStateRelPath();
+  const backupPath = rootAppStateBackupRelPath();
+
   try {
-    const raw = await readFile(rootPath, rootAppStateRelPath());
+    const raw = await readFile(rootPath, mainPath);
     const parsed = safeJsonParse(raw, {});
-    return parsed && typeof parsed === "object" ? parsed : {};
+    if (parsed && typeof parsed === "object") {
+      return parsed;
+    }
   } catch {
-    return {};
+    // Fallback to backup when main snapshot is unavailable.
   }
+
+  try {
+    const backupRaw = await readFile(rootPath, backupPath);
+    const backupParsed = safeJsonParse(backupRaw, {});
+    if (backupParsed && typeof backupParsed === "object") {
+      await writeFile(
+        rootPath,
+        mainPath,
+        JSON.stringify(backupParsed, null, 2),
+      );
+      return backupParsed;
+    }
+  } catch {
+    // No backup available.
+  }
+
+  return {};
 }
 
 export async function saveRootState(rootPath, state) {
   if (!rootPath) return;
   await ensureDataDir(rootPath);
-  await writeFile(
-    rootPath,
-    rootAppStateRelPath(),
-    JSON.stringify(state || {}, null, 2),
-  );
+
+  const mainPath = rootAppStateRelPath();
+  const tempPath = rootAppStateTempRelPath();
+  const backupPath = rootAppStateBackupRelPath();
+  const serialized = JSON.stringify(state || {}, null, 2);
+
+  let previousMainRaw = null;
+  try {
+    previousMainRaw = await readFile(rootPath, mainPath);
+  } catch {
+    previousMainRaw = null;
+  }
+
+  if (typeof previousMainRaw === "string") {
+    await writeFile(rootPath, backupPath, previousMainRaw);
+  }
+
+  await writeFile(rootPath, tempPath, serialized);
+
+  try {
+    await deletePath(rootPath, mainPath);
+  } catch {
+    // Main file may not exist on first write.
+  }
+
+  try {
+    await renameFile(rootPath, tempPath, "app_state.json");
+  } catch (renameErr) {
+    if (typeof previousMainRaw === "string") {
+      await writeFile(rootPath, mainPath, previousMainRaw);
+    }
+    throw renameErr;
+  }
 }
 
 export async function getRootStateValue(rootPath, key, fallback = null) {

@@ -30,6 +30,12 @@ const DEFAULT_OLM_CONFIG = {
   decay_half_life_days: 30.0,
 };
 
+function isValidConceptId(value) {
+  const id = String(value || "").trim();
+  if (!id) return false;
+  return /^[a-z0-9]+(?:[.-][a-z0-9]+)*$/.test(id);
+}
+
 export default function AppSettingsPanel({
   open,
   onClose,
@@ -182,6 +188,14 @@ export default function AppSettingsPanel({
 
   async function handleSaveNodeProfile() {
     if (!selectedNode || typeof onSaveNodeProfile !== "function") return;
+
+    if (!isValidConceptId(nodeConceptId)) {
+      setNodeMsg(
+        "Concept ID inválido. Usa apenas minúsculas, números, '.' ou '-'.",
+      );
+      setTimeout(() => setNodeMsg(""), 3500);
+      return;
+    }
 
     onSaveNodeProfile(selectedNode.path, {
       kind: selectedNodeProfile?.kind,

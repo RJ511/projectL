@@ -49,3 +49,12 @@ The project now includes an integrated OLM core in the current Tauri + React sta
 This is implemented without adding another software stack (no Django, no external backend). It runs inside the existing Tauri backend commands and React frontend.
 
 The sections **Tools to implement** and **Structure wise** remain guiding requirements for upcoming increments (Note Library, Flashcards, Anki compatibility, plugin-wise architecture, etc.).
+
+## Canonical documentation
+
+- Implementation source of truth: `docs/architecture-deep-dive.md`
+- OLM formal logic source of truth: `OLM_LOGIC_MAP.md` (repository root)
+- Operational usage guide: `docs/PROJECT_GUIDE.md`
+- Module-level implementation map: `docs/IMPLEMENTATION_CONTEXT.md`
+
+Note: `docs/OLM_LOGIC_MAP.md` is intentionally a bridge file to avoid duplicated technical content.

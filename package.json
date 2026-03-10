@@ -9,7 +9,9 @@
     "preview": "vite preview",
     "tauri": "tauri",
     "storybook": "storybook dev -p 6006",
-    "build-storybook": "storybook build"
+    "build-storybook": "storybook build",
+    "check:docs-sync": "node scripts/check-doc-sync.mjs",
+    "calibrate:meta": "node scripts/calibrate-meta-strength.mjs"
   },
   "dependencies": {
     "@codemirror/autocomplete": "^6.19.1",

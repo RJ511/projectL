@@ -47,6 +47,7 @@ export default function KnowledgeLevels({
   learningAnalytics,
 }) {
   const [topSuggestion, setTopSuggestion] = useState("");
+  const [topSuggestionDetail, setTopSuggestionDetail] = useState(null);
 
   const domains = useMemo(() => collectDomains(tree), [tree]);
 
@@ -161,17 +162,11 @@ export default function KnowledgeLevels({
 
     async function loadSuggestion() {
       try {
-        const conceptDomainPrefix = activeDomainLabel
-          ? `${slugify(activeDomainLabel)}.`
-          : null;
-        const domainPathPrefix = activeDomainLabel
-          ? `${activeDomainLabel}/`
-          : null;
+        const domainId = activeDomainLabel ? slugify(activeDomainLabel) : null;
 
         const ranked = await nextContentToStudy({
           top: 5,
-          domainFilter: conceptDomainPrefix,
-          contentPrefix: domainPathPrefix,
+          domainId,
         });
 
         const topItem = ranked[0];
@@ -179,9 +174,11 @@ export default function KnowledgeLevels({
         setTopSuggestion(
           topItem?.title || topItem?.content_id || "No item recommendation yet",
         );
+        setTopSuggestionDetail(topItem || null);
       } catch {
         if (!mounted) return;
         setTopSuggestion("No item recommendation yet");
+        setTopSuggestionDetail(null);
       }
     }
 
@@ -262,6 +259,17 @@ export default function KnowledgeLevels({
           <div>
             Próximo recomendado: <strong>{topSuggestion}</strong>
           </div>
+          {topSuggestionDetail ? (
+            <div style={{ color: "#64748b", fontSize: 12 }}>
+              Penalização por mapeamento: x
+              {Number(topSuggestionDetail.mapping_penalty ?? 1).toFixed(2)} ·
+              qualidade:{" "}
+              {Math.round(
+                Number(topSuggestionDetail.mapping_quality ?? 0) * 100,
+              )}
+              %
+            </div>
+          ) : null}
           <div>Tempo total no domínio: {formatDuration(domainTimeSec)}</div>
           <div>
             Último ficheiro aberto: {lastOpenedItem?.name || "Sem histórico"}

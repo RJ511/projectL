@@ -123,6 +123,9 @@ Implementado em `confidence_weight`:
 
 Para cada conceito afetado:
 
+Nota de leitura: esta secção define o pipeline completo de peso (`w`).
+A secção 12 detalha apenas a componente metacognitiva (`w_meta`) usada aqui.
+
 - peso base:
 
 $$
@@ -141,12 +144,16 @@ $$
 w = min\left(w_{base}\cdot w_{warm},\ hard\_cap(event\_type)\right)
 $$
 
+Aqui, `w` é o peso final aplicado no update.
+
 Onde:
 
 - $w_{type}$: peso por tipo de evento
 - $w_{mapping}$: cobertura do conteúdo para esse conceito
 - $w_{conf}$: peso de confiança
 - $w_{meta}$: fator metacognitivo
+
+Definição de $w_{meta}$: ver secção **12.3**.
 
 Caps atuais (`limiter_for_event`):
 
@@ -184,6 +191,11 @@ A função `normalize_maps` usa esta ordem:
 3. Sem nenhuma das duas opções -> erro de ingestão.
 
 Isto garante que todo evento aplicado é atribuível a conceito(s).
+
+Nota de robustez (v2):
+
+- Pesos de mapeamento são normalizados por item/evento (somam 1.0 após deduplicação por conceito).
+- `coverage_weight` inválido (não finito ou <= 0) é descartado na normalização e rejeitado no comando de mapeamento.
 
 ## 6) Lógica de recomendação (`next_to_study`)
 
@@ -229,6 +241,20 @@ Cada item recomendado inclui 3 linhas automáticas:
 1. Mastery baixo/moderado.
 2. Readiness dos pré-requisitos.
 3. Estado da incerteza (alta vs controlada).
+
+No ranking unificado por item (`olm_next_content_to_study`), cada item também expõe:
+
+- `mapping_quality` (0..1)
+- `mapping_penalty` (multiplicador aplicado ao score)
+
+Estes campos são mostrados no Domain Level para tornar a penalização visível ao utilizador.
+
+## 6.5 Filtro de domínio no ranking por item
+
+`olm_next_content_to_study` usa `domain_id` explícito em `content_items` para segmentar recomendações por domínio.
+
+- Evita dependência exclusiva de prefixo de path.
+- Mantém compatibilidade com `domain_filter` no ranking por conceito (`next_to_study`).
 
 ## 7) Porque este desenho é bom para OLM
 
@@ -289,9 +315,6 @@ A segmentação por domínio pode ser reforçada com:
 - `olm_get_explain`
 - `olm_next_to_study` (agora com `domain_filter` e `exclude` opcionais)
 - `olm_next_content_to_study` (recomendação única de item baseada em conceitos priorizados)
-
-### Novos (v2)
-
 - `olm_get_config` / `olm_set_config` — ler/gravar parâmetros OLM
 - `olm_save_state` / `olm_load_state` / `olm_reset_state` — persistência do estado
 - `olm_export_json` / `olm_import_json` — exportar/importar JSON completo
@@ -300,15 +323,23 @@ A segmentação por domínio pode ser reforçada com:
 
 > Nota: as simulações sintéticas foram movidas para **CLI de teste** e não fazem parte da superfície final da app.
 
-## 12) Metacognição (implementado)
+## 12) Metacognição
 
 O OLM agora usa dados metacognitivos na ingestão real (`olm_ingest_event`) via um fator adicional:
 
 $$
-w_{final}=w_{type}\cdot w_{mapping}\cdot w_{conf}\cdot w_{meta}
+w_{pre\_meta}=w_{type}\cdot w_{mapping}\cdot w_{conf}\cdot w_{meta}
 $$
 
-Com isso, o update deixa de ser apenas "resultado bruto" e passa a considerar qualidade metacognitiva.
+Este termo é o peso **antes** dos limitadores (warmup e hard-cap) e corresponde ao mesmo bloco base descrito em **4.5**.
+
+O peso efetivamente aplicado no update continua (exatamente como em **4.5**):
+
+$$
+w=\min\left(w_{pre\_meta}\cdot w_{warm},\ hard\_cap(event\_type)\right)
+$$
+
+Com isso, o update deixa de ser apenas "resultado bruto" e passa a considerar qualidade metacognitiva sem violar os limites de segurança do modelo.
 
 ### 12.0 Porquê (decisão de produto)
 
@@ -329,6 +360,24 @@ Princípio: usar um input simples e frequente, de baixo custo cognitivo, para en
 - `effort` / `effort_level`
 - `objective_score` (derivado de `correct/total` em eventos objetivos)
 
+Definições operacionais (runtime em `metacognitive_signal`):
+
+- `objective_score`:
+  - se o evento tiver `correct` e `total`, então:
+    $$
+    objective=clamp\left(\frac{correct}{total},0,1\right)
+    $$
+  - caso contrário: `objective` ausente.
+- `perceived`:
+  - prioridade 1: `payload.perceived_score` (clamped)
+  - fallback implícito em alguns ramos: `confidence`.
+- `difficulty`:
+  - prioridade: `difficulty`, senão `perceived_difficulty`, senão `0.5`.
+- `effort`:
+  - prioridade: `effort`, senão `effort_level`, senão `0.6`.
+
+Todos estes sinais são normalizados para `[0,1]` via `clamp_01`.
+
 ### 12.2 Alinhamento metacognitivo
 
 Exemplo principal:
@@ -337,17 +386,89 @@ $$
 alignment = 1 - |objective - perceived|
 $$
 
-Fallbacks usam `confidence` quando `perceived_score` não existe.
+Implementação explícita (ordem de fallback):
+
+1. Se existir `objective` e `perceived_score`:
+
+$$
+alignment = clamp\left(1 - |objective - perceived\_score|, 0, 1\right)
+$$
+
+2. Se existir `objective` mas não `perceived_score`:
+
+$$
+alignment = clamp\left(1 - |objective - confidence|, 0, 1\right)
+$$
+
+3. Se não existir `objective`, mas existir `perceived_score`:
+
+$$
+alignment = clamp\left(1 - |perceived\_score - confidence|, 0, 1\right)
+$$
+
+4. Sem sinais suficientes: `alignment = 0.5`.
 
 ### 12.3 Fator metacognitivo
 
 O fator final combina dificuldade, esforço, confiança e alinhamento, com intensidade controlada por `meta_strength`:
+Componentes intermediárias:
+
+$$
+difficulty\_term = 1 - 0.3\cdot\left(2\cdot|difficulty-0.5|\right)
+$$
+
+$$
+effort\_term = 0.7 + 0.3\cdot effort
+$$
+
+$$
+confidence\_term = 0.75 + 0.25\cdot confidence
+$$
+
+$$
+alignment\_term = 0.6 + 0.4\cdot alignment
+$$
+
+$$
+meta\_raw = clamp\left(difficulty\_term\cdot effort\_term\cdot confidence\_term\cdot alignment\_term, 0, 1\right)
+$$
 
 $$
 w_{meta}= (1-meta\_strength) + meta\_strength\cdot meta\_raw
 $$
 
+Ou seja, `meta_raw` é o score metacognitivo composto (pré-intensidade), e `meta_strength` controla quanto esse score influencia `w_meta`.
+
 No update real atual (`olm_ingest_event`), o backend usa `meta_strength = 0.6` (balanced) como constante.
+
+### 12.5 Mitigação de viés metacognitivo (Fase 2)
+
+Para reduzir sobre-ajuste por autoavaliações subjetivas, o runtime aplica quatro salvaguardas:
+
+1. **Fiabilidade metacognitiva** `r in [0,1]`:
+
+- combina presença de sinal objetivo, confiança, alinhamento, histórico de evidência e cap por sessão;
+- quanto menor `r`, menor o impacto metacognitivo.
+
+2. **Shrink para neutro em baixa fiabilidade**:
+
+$$
+s' = 0.5 + (s - 0.5) \cdot (0.4 + 0.6r)
+$$
+
+onde `s` é o score bruto do evento e `s'` o score efetivo usado no update.
+
+3. **Blending com sinal objetivo (quando existir)**:
+
+- para eventos com evidência objetiva (`correct/total`), o score final puxa para o objetivo;
+- isto limita divergência quando percepção e desempenho real entram em conflito.
+
+4. **Cap por sessão para `self_assessment`**:
+
+- após várias autoavaliações no mesmo dia para o mesmo conceito, o efeito metacognitivo é reduzido;
+- evita inflação de influência por repetição de prompts.
+
+Implementação de referência: `src-tauri/src/commands/olm.rs` em `metacognitive_signal`, `meta_reliability`, `meta_session_cap` e `ingest_into_store`.
 
 ### 12.4 Check-ins metacognitivos 1-4 (frontend)
 
@@ -425,10 +546,22 @@ cargo run --bin olm_sim -- --out path.json  # guarda em ficheiro indicado
 # Multi-seed (mostra variância entre N seeds)
 cargo run --bin olm_sim -- --seeds 10
 cargo run --bin olm_sim -- --seed-range 0 29 --out multi_results.json
+
+# Calibração automatizada de meta_strength + relatório versionado
+cd ..
+npm run calibrate:meta
 ```
 
 Multi-seed agrega métricas (pass_rate, hit@3, MRR, nDCG@3) por approach sobre N execuções.  
 As execuções usam seed para perturbar ligeiramente os estados dos cenários (de forma reproduzível por seed/cenário), permitindo variância real em multi-seed.
+
+O pipeline `calibrate:meta` grava automaticamente três artefactos em `docs/reports/`:
+
+- `meta-strength-calibration-YYYY-MM-DD.raw.json`
+- `meta-strength-calibration-YYYY-MM-DD.json`
+- `meta-strength-calibration-YYYY-MM-DD.md`
+
+Estes ficheiros servem de base para recomendar default de `meta_strength` em ambientes de teste/sintéticos e auditar estabilidade entre seeds.
 
 ## 15) Config OLM (parâmetros persistidos)
 

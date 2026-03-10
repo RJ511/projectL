@@ -4,10 +4,11 @@ Este ficheiro é a referência rápida para **implementar, alterar ou explicar**
 
 ## 1) Ordem de leitura (source of truth)
 
-1. `IMPLEMENTATION_CONTEXT.md` (este ficheiro): mapa de módulos, funções, onde mudar.
-2. `OLM_LOGIC_MAP.md`: formalização e lógica matemática do OLM.
-3. `PROJECT_GUIDE.md`: execução e uso da app.
-4. `bainstorm.md`: histórico/ideias (não usar como verdade técnica atual).
+1. `architecture-deep-dive.md` (canonico): arquitetura, riscos, limites e prioridades de implementação.
+2. `IMPLEMENTATION_CONTEXT.md` (este ficheiro): mapa de módulos, funções, onde mudar.
+3. `OLM_LOGIC_MAP.md` (raiz): formalização e lógica matemática do OLM.
+4. `PROJECT_GUIDE.md`: execução e uso da app.
+5. `bainstorm.md`: histórico/ideias (não usar como verdade técnica atual).
 
 ## 2) Arquitetura atual (resumo)
 
@@ -43,7 +44,8 @@ Este ficheiro é a referência rápida para **implementar, alterar ou explicar**
 
 - `src/components/insights/KnowledgeLevels.jsx`
   - Painel contextual para Root/Domain.
-  - Recomendação de item por domínio via `getContentMetrics`.
+  - Recomendação de item por domínio via `nextContentToStudy` com `domainId`.
+  - Mostra penalização por qualidade de mapeamento (`mapping_penalty`/`mapping_quality`).
   - Mostra uso de recursos, tempos e conclusão média.
 
 - `src/components/olm/OlmPanel.jsx`
@@ -65,15 +67,17 @@ Este ficheiro é a referência rápida para **implementar, alterar ou explicar**
   - Ranking `next_to_study`, explain/debug, persistência, métricas por conteúdo.
 
 - `src-tauri/src/commands/mod.rs`
-  - Re-export dos comandos `fs`, `tree`, `olm`.
+  - Agrega módulos de comandos (`fs`, `tree`, `olm`) com paths explícitos.
 
 ### Bridge de serviços
 
 - `src/services/olm.service.jsx`
   - Wrapper frontend para comandos Tauri OLM.
+  - `nextContentToStudy` aceita `domainId` (mapeado para `domain_id` no backend).
 
 - `src/services/rootDataStore.js`
   - KV store de estado da app em `.projectl-data/app_state.json`.
+  - Escrita resiliente com `temp + rename`, backup e recuperação automática.
 
 - `src/services/dataPolicy.js`
   - Paths e convenções da política de dados local no root.
@@ -136,7 +140,7 @@ Também é possível declarar conceitos inline no conteúdo com `;;;conceito;;;`
 
 ## 4.5 Recomendação no Domain Level
 
-- `KnowledgeLevels.jsx` usa `getContentMetrics()` e filtra por `content_id` do domínio.
+- `KnowledgeLevels.jsx` usa `nextContentToStudy({ domainId })` para ranking de item.
 - O card de domínio recomenda **itens** (ficheiros), não conceitos/domínios.
 
 ## 5) Comandos OLM expostos (contrato backend)
@@ -168,14 +172,16 @@ Nem toda a lógica operacional está no `OLM_LOGIC_MAP.md`. Itens hoje implement
 - Alterar hierarquia Root/Domain/Item e renderização: `Main.jsx` + `Sidebar.jsx` + `KnowledgeLevels.jsx`.
 - Alterar contratos frontend↔backend: `src/services/olm.service.jsx` e `src-tauri/src/main.rs`.
 - Alterar política de dados local no root: `src/services/rootDataStore.js`, `src/services/dataPolicy.js`, `src-tauri/src/commands/tree.rs`.
+- Ajustar calibração sintética de `meta_strength`: `scripts/calibrate-meta-strength.mjs` + `src-tauri/src/bin/olm_sim.rs`.
 
 ## 8) Estado conhecido e manutenção
 
 - `bainstorm.md` está desatualizado e deve ser tratado como material de ideação.
 - Ao introduzir lógica nova no OLM, atualizar:
-  1. `OLM_LOGIC_MAP.md` (formalização)
-  2. `IMPLEMENTATION_CONTEXT.md` (mapa técnico)
-  3. `PROJECT_GUIDE.md` (uso/execução se afetar fluxo)
+  1. `architecture-deep-dive.md` (canonico)
+  2. `OLM_LOGIC_MAP.md` (formalização)
+  3. `IMPLEMENTATION_CONTEXT.md` (mapa técnico)
+  4. `PROJECT_GUIDE.md` (uso/execução se afetar fluxo)
 
 ## 9) Checklist de PR/alteração
 
@@ -183,6 +189,7 @@ Nem toda a lógica operacional está no `OLM_LOGIC_MAP.md`. Itens hoje implement
 2. OLM mudou (peso, score, ranking, comandos)? validar `olm.rs` + `OLM_LOGIC_MAP.md`.
 3. Eventos automáticos mudaram? validar `useFileSystem.jsx`.
 4. Build/frontend e cargo check executados.
+5. Se alterar scoring/metacognição: correr `npm run calibrate:meta` e anexar/atualizar relatório em `docs/reports/`.
 
 ## 10) Onde está explicado “concept”
 

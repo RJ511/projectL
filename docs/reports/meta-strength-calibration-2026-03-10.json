@@ -1,0 +1,51 @@
+{
+  "generated_at": "2026-03-10T12:25:12.769Z",
+  "seed_start": 0,
+  "seed_end": 29,
+  "seed_count": 30,
+  "recommendation": {
+    "approach_id": "metacog_strict",
+    "meta_strength": 1
+  },
+  "approaches": [
+    {
+      "approach_id": "metacog_strict",
+      "meta_strength": 1,
+      "avg_pass_rate": 1,
+      "avg_hit_at_3_rate": 1,
+      "avg_mrr": 1,
+      "avg_ndcg_at_3": 1,
+      "avg_test_pass_rate": 1,
+      "avg_test_mrr": 1,
+      "std_test_mrr": 0,
+      "calibration_selected_count": 30,
+      "composite_score": 1
+    },
+    {
+      "approach_id": "baseline",
+      "meta_strength": 0,
+      "avg_pass_rate": 1,
+      "avg_hit_at_3_rate": 1,
+      "avg_mrr": 1,
+      "avg_ndcg_at_3": 1,
+      "avg_test_pass_rate": 1,
+      "avg_test_mrr": 1,
+      "std_test_mrr": 0,
+      "calibration_selected_count": 0,
+      "composite_score": 1
+    },
+    {
+      "approach_id": "metacog_balanced",
+      "meta_strength": 0.6,
+      "avg_pass_rate": 1,
+      "avg_hit_at_3_rate": 1,
+      "avg_mrr": 1,
+      "avg_ndcg_at_3": 1,
+      "avg_test_pass_rate": 1,
+      "avg_test_mrr": 1,
+      "std_test_mrr": 0,
+      "calibration_selected_count": 0,
+      "composite_score": 1
+    }
+  ]
+}

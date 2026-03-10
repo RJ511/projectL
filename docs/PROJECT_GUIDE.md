@@ -81,6 +81,31 @@ Esses conceitos são normalizados para IDs namespaced por domínio e entram no f
 npm run build
 ```
 
+### Verificação de sync código↔docs
+
+```bash
+npm run check:docs-sync
+```
+
+Falha se houver alterações de código sem alteração de documentação canónica.
+
+### Calibração de `meta_strength` (sintético)
+
+```bash
+npm run calibrate:meta
+```
+
+Gera relatório versionado em `docs/reports/`:
+
+- `meta-strength-calibration-YYYY-MM-DD.raw.json` (payload completo por seed)
+- `meta-strength-calibration-YYYY-MM-DD.json` (sumário agregado)
+- `meta-strength-calibration-YYYY-MM-DD.md` (recomendação legível)
+
+Parâmetros opcionais:
+
+- `node scripts/calibrate-meta-strength.mjs --start 0 --end 29`
+- `node scripts/calibrate-meta-strength.mjs --start 10 --end 59 --out-dir docs/reports`
+
 ### Backend Rust check
 
 ```bash
@@ -114,6 +139,7 @@ A implementação mantém o requisito pedido:
 Todos os dados locais da app passam a ser guardados dentro da pasta root do projeto, em:
 
 - `.projectl-data/app_state.json` (estado de UI, analytics, perfis, planos, configs de domínio)
+- `.projectl-data/app_state.bak.json` (backup do estado de UI)
 - `.projectl-data/olm_state.json` (estado completo do OLM)
 
 Comportamento esperado:
@@ -125,3 +151,4 @@ Notas operacionais:
 
 - OLM save/load é feito com path explícito para `.projectl-data/olm_state.json`.
 - O estado de UI deixou de depender de `localStorage` e usa ficheiro no root.
+- `app_state.json` usa escrita resiliente (`temp + rename`) com recuperação automática a partir do backup em caso de corrupção.

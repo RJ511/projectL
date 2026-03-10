@@ -1,3 +1,5 @@
+#![allow(dead_code)]
+
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use rand::{Rng, SeedableRng};
@@ -81,6 +83,7 @@ pub struct ContentItem {
     pub id: String,
     pub item_type: String,
     pub title: String,
+    pub domain_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -168,8 +171,18 @@ pub struct NextContentToStudyItem {
     pub score: f64,
     pub attempts: usize,
     pub avg_score: f64,
+    pub mapping_quality: f64,
+    pub mapping_penalty: f64,
     pub supporting_concepts: Vec<String>,
     pub why: Vec<String>,
+}
+
+#[derive(Debug, Clone)]
+struct ContentMappingQuality {
+    quality: f64,
+    penalty: f64,
+    raw_weight_sum: f64,
+    mapped_concepts: usize,
 }
 
 #[derive(Debug, Clone)]
@@ -294,6 +307,49 @@ pub struct RankingDebugResponse {
 
 fn clamp_01(value: f64) -> f64 {
     value.clamp(0.0, 1.0)
+}
+
+fn finite_weight(weight: f64) -> Option<f64> {
+    if !weight.is_finite() || weight <= 0.0 {
+        return None;
+    }
+    Some(weight)
+}
+
+fn normalized_weights(raw: &[(String, f64)]) -> Vec<(String, f64)> {
+    let mut acc: HashMap<String, f64> = HashMap::new();
+    for (id, weight) in raw {
+        if let Some(valid) = finite_weight(*weight) {
+            *acc.entry(id.clone()).or_insert(0.0) += valid;
+        }
+    }
+
+    let total: f64 = acc.values().sum();
+    if total <= 0.0 {
+        return Vec::new();
+    }
+
+    acc.into_iter().map(|(id, weight)| (id, weight / total)).collect()
+}
+
+fn content_mapping_quality(raw_weight_sum: f64, mapped_concepts: usize) -> ContentMappingQuality {
+    let coverage_quality = clamp_01(raw_weight_sum);
+    let breadth_quality = match mapped_concepts {
+        0 => 0.0,
+        1 => 0.6,
+        2 => 0.8,
+        _ => 1.0,
+    };
+
+    let quality = clamp_01((0.7 * coverage_quality) + (0.3 * breadth_quality));
+    let penalty = 0.55 + (0.45 * quality);
+
+    ContentMappingQuality {
+        quality,
+        penalty,
+        raw_weight_sum,
+        mapped_concepts,
+    }
 }
 
 fn ensure_state<'a>(store: &'a mut OlmStore, concept_id: &str) -> &'a mut ConceptState {
@@ -496,11 +552,83 @@ fn confidence_weight(event: &StudyEvent) -> f64 {
         .unwrap_or(1.0)
 }
 
-fn metacognitive_signal(event: &StudyEvent, objective: Option<f64>, meta_strength: f64) -> (f64, f64) {
-    let strength = clamp_01(meta_strength);
-    if strength <= 0.0 {
-        return (1.0, 0.5);
+#[derive(Debug, Clone, Copy)]
+struct MetaAdjustment {
+    effective_weight: f64,
+    alignment: f64,
+    reliability: f64,
+    effective_score: f64,
+}
+
+fn count_self_assessment_same_day(entries: &[EvidenceChunk], timestamp: &str) -> usize {
+    let Some(day_key) = timestamp.get(0..10) else {
+        return 0;
+    };
+
+    entries
+        .iter()
+        .filter(|row| {
+            row.event_type == "self_assessment"
+                && row
+                    .created_at
+                    .get(0..10)
+                    .map(|d| d == day_key)
+                    .unwrap_or(false)
+        })
+        .count()
+}
+
+fn meta_session_cap(event_type: &str, prior_self_assessment_same_day: usize) -> f64 {
+    if event_type != "self_assessment" {
+        return 1.0;
     }
+
+    if prior_self_assessment_same_day <= 2 {
+        return 1.0;
+    }
+
+    let overflow = (prior_self_assessment_same_day - 2) as f64;
+    (1.0 - (0.20 * overflow)).clamp(0.4, 1.0)
+}
+
+fn blend_with_objective(score: f64, objective: Option<f64>, reliability: f64) -> f64 {
+    let Some(objective_score) = objective else {
+        return score;
+    };
+
+    let objective_weight = (0.65 + (0.25 * clamp_01(reliability))).clamp(0.65, 0.9);
+    clamp_01((objective_weight * objective_score) + ((1.0 - objective_weight) * score))
+}
+
+fn meta_reliability(
+    event: &StudyEvent,
+    objective: Option<f64>,
+    alignment: f64,
+    prior_evidence_count: usize,
+    session_cap: f64,
+) -> f64 {
+    let confidence = parse_payload_float(&event.payload, "confidence")
+        .map(clamp_01)
+        .unwrap_or(0.5);
+
+    let objective_term = if objective.is_some() { 1.0 } else { 0.65 };
+    let confidence_term = 0.6 + (0.4 * confidence);
+    let alignment_term = 0.55 + (0.45 * clamp_01(alignment));
+    let evidence_term = ((prior_evidence_count as f64 + 1.0) / 12.0).clamp(0.3, 1.0);
+    let historical_term = 0.5 + (0.5 * evidence_term);
+
+    clamp_01(objective_term * confidence_term * alignment_term * historical_term * session_cap)
+}
+
+fn metacognitive_signal(
+    event: &StudyEvent,
+    objective: Option<f64>,
+    raw_score: f64,
+    meta_strength: f64,
+    prior_evidence_count: usize,
+    prior_self_assessment_same_day: usize,
+) -> MetaAdjustment {
+    let strength = clamp_01(meta_strength);
 
     let confidence = parse_payload_float(&event.payload, "confidence")
         .map(clamp_01)
@@ -531,27 +659,58 @@ fn metacognitive_signal(event: &StudyEvent, objective: Option<f64>, meta_strengt
     let alignment_term = 0.6 + (0.4 * alignment);
 
     let meta_raw = clamp_01(difficulty_term * effort_term * confidence_term * alignment_term);
-    let meta_weight = clamp_01((1.0 - strength) + (strength * meta_raw));
 
-    (meta_weight, alignment)
+    let session_cap = meta_session_cap(&event.event_type, prior_self_assessment_same_day);
+    let reliability = if strength <= 0.0 {
+        1.0
+    } else {
+        meta_reliability(
+            event,
+            objective,
+            alignment,
+            prior_evidence_count,
+            session_cap,
+        )
+    };
+
+    let raw_meta_weight = if strength <= 0.0 {
+        1.0
+    } else {
+        clamp_01((1.0 - strength) + (strength * meta_raw))
+    };
+
+    // Low reliability shrinks metacognitive influence towards neutral weight=1.0.
+    let effective_weight = clamp_01(1.0 + ((raw_meta_weight - 1.0) * reliability));
+
+    let shrunk_score = 0.5 + ((raw_score - 0.5) * (0.4 + (0.6 * reliability)));
+    let effective_score = blend_with_objective(clamp_01(shrunk_score), objective, reliability);
+
+    MetaAdjustment {
+        effective_weight,
+        alignment,
+        reliability,
+        effective_score,
+    }
 }
 
 fn normalize_maps(store: &OlmStore, event: &StudyEvent) -> Vec<(String, f64)> {
     if !event.concept_ids.is_empty() {
-        return event
+        let raw: Vec<(String, f64)> = event
             .concept_ids
             .iter()
             .map(|concept_id| (concept_id.clone(), 1.0))
             .collect();
+        return normalized_weights(&raw);
     }
 
     if let Some(content_id) = &event.content_id {
-        return store
+        let raw: Vec<(String, f64)> = store
             .content_concepts
             .iter()
             .filter(|map| &map.content_id == content_id)
-            .map(|map| (map.concept_id.clone(), clamp_01(map.coverage_weight)))
+            .map(|map| (map.concept_id.clone(), map.coverage_weight))
             .collect();
+        return normalized_weights(&raw);
     }
 
     Vec::new()
@@ -570,7 +729,6 @@ fn ingest_into_store(
     let objective = objective_score(event);
     let base_weight = event_type_weight(&event.event_type);
     let confidence = confidence_weight(event);
-    let (meta_weight, alignment) = metacognitive_signal(event, objective, meta_strength);
 
     let mapped_concepts = normalize_maps(store, event);
     if mapped_concepts.is_empty() {
@@ -590,18 +748,31 @@ fn ingest_into_store(
             continue;
         }
 
-        let prior_evidence_count = store
+        let prior_entries = store
             .evidence
             .get(&concept_id)
-            .map(|rows| rows.len())
-            .unwrap_or(0);
+            .cloned()
+            .unwrap_or_default();
+        let prior_evidence_count = prior_entries.len();
+        let prior_self_assessment_same_day =
+            count_self_assessment_same_day(&prior_entries, &event.timestamp);
+
+        let meta = metacognitive_signal(
+            event,
+            objective,
+            score,
+            meta_strength,
+            prior_evidence_count,
+            prior_self_assessment_same_day,
+        );
+
         let (warmup_factor, hard_cap) = limiter_for_event(&event.event_type, prior_evidence_count);
 
-        let mut applied_weight = base_weight * mapping_weight * confidence * meta_weight;
+        let mut applied_weight = base_weight * mapping_weight * confidence * meta.effective_weight;
         applied_weight *= warmup_factor;
         applied_weight = applied_weight.min(hard_cap);
 
-        let conservative_score = 0.5 + ((score - 0.5) * 0.6);
+        let conservative_score = 0.5 + ((meta.effective_score - 0.5) * 0.6);
         let bounded_score = clamp_01(conservative_score);
 
         let delta_alpha = applied_weight * bounded_score;
@@ -620,8 +791,8 @@ fn ingest_into_store(
             event_type: event.event_type.clone(),
             score: bounded_score,
             applied_weight,
-            metacognitive_weight: meta_weight,
-            metacognitive_alignment: alignment,
+            metacognitive_weight: meta.effective_weight,
+            metacognitive_alignment: meta.alignment,
             created_at: event.timestamp.clone(),
         });
 
@@ -669,7 +840,7 @@ fn next_content_to_study_from_store(
     readiness_threshold: f64,
     exclude_set: &HashSet<String>,
     concept_domain_filter: Option<&str>,
-    content_prefix: Option<&str>,
+    domain_id: Option<&str>,
 ) -> Vec<NextContentToStudyItem> {
     let concept_rank = next_to_study_from_store(
         store,
@@ -705,29 +876,67 @@ fn next_content_to_study_from_store(
         entry.1 += score;
     }
 
-    let mut aggregated: HashMap<String, (f64, Vec<(String, f64)>)> = HashMap::new();
+    let mut raw_by_content: HashMap<String, Vec<(String, f64)>> = HashMap::new();
     for map in &store.content_concepts {
-        if let Some(prefix) = content_prefix {
-            if !map.content_id.starts_with(prefix) {
+        if let Some(target_domain_id) = domain_id {
+            let Some(item) = store.content_items.get(&map.content_id) else {
+                continue;
+            };
+
+            let item_domain = item.domain_id.as_deref().unwrap_or("");
+            if item_domain != target_domain_id {
                 continue;
             }
         }
 
-        let Some(concept_score) = concept_score_by_id.get(&map.concept_id).copied() else {
+        if !concept_score_by_id.contains_key(&map.concept_id) {
+            continue;
+        }
+
+        let Some(valid_weight) = finite_weight(map.coverage_weight) else {
             continue;
         };
 
-        let contribution = concept_score * clamp_01(map.coverage_weight).max(0.05);
-        let entry = aggregated
+        raw_by_content
             .entry(map.content_id.clone())
-            .or_insert((0.0, Vec::new()));
-        entry.0 += contribution;
-        entry.1.push((map.concept_id.clone(), contribution));
+            .or_default()
+            .push((map.concept_id.clone(), valid_weight));
     }
 
-    let mut ranked: Vec<NextContentToStudyItem> = aggregated
+    let mut ranked: Vec<NextContentToStudyItem> = raw_by_content
         .into_iter()
-        .map(|(content_id, (concept_signal, mut contributors))| {
+        .filter_map(|(content_id, raw_maps)| {
+            let raw_weight_sum: f64 = raw_maps
+                .iter()
+                .filter_map(|(_, weight)| finite_weight(*weight))
+                .sum();
+            let mapped_concepts = raw_maps
+                .iter()
+                .map(|(concept_id, _)| concept_id)
+                .collect::<HashSet<_>>()
+                .len();
+            let mapping_quality = content_mapping_quality(raw_weight_sum, mapped_concepts);
+
+            let normalized = normalized_weights(&raw_maps);
+            if normalized.is_empty() {
+                return None;
+            }
+
+            let mut concept_signal = 0.0;
+            let mut contributors: Vec<(String, f64)> = Vec::new();
+            for (concept_id, weight) in normalized {
+                let Some(concept_score) = concept_score_by_id.get(&concept_id).copied() else {
+                    continue;
+                };
+                let contribution = concept_score * weight;
+                concept_signal += contribution;
+                contributors.push((concept_id, contribution));
+            }
+
+            if contributors.is_empty() {
+                return None;
+            }
+
             contributors.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(Ordering::Equal));
 
             let (attempts, score_sum) = metric_acc.get(&content_id).copied().unwrap_or((0, 0.0));
@@ -737,7 +946,7 @@ fn next_content_to_study_from_store(
                 0.0
             };
             let need_factor = 0.7 + (0.3 * (1.0 - clamp_01(avg_score)));
-            let final_score = concept_signal * need_factor;
+            let final_score = concept_signal * need_factor * mapping_quality.penalty;
 
             let supporting_concepts: Vec<String> = contributors
                 .iter()
@@ -753,18 +962,30 @@ fn next_content_to_study_from_store(
             let why = vec![
                 format!("Conceitos prioritários relacionados: {}", readable_concepts.join(", ")),
                 format!("Prioridade agregada por conceito: {:.3}", concept_signal),
+                format!(
+                    "Qualidade do mapeamento: {:.2} (peso_total={:.2}, conceitos={})",
+                    mapping_quality.quality,
+                    mapping_quality.raw_weight_sum,
+                    mapping_quality.mapped_concepts
+                ),
+                format!(
+                    "Penalização por mapeamento fraco: x{:.2}",
+                    mapping_quality.penalty
+                ),
                 format!("Histórico do item: avg_score={:.2}, attempts={}", avg_score, attempts),
             ];
 
-            NextContentToStudyItem {
+            Some(NextContentToStudyItem {
                 content_id: content_id.clone(),
                 title: store.content_items.get(&content_id).map(|item| item.title.clone()),
                 score: final_score,
                 attempts,
                 avg_score,
+                mapping_quality: mapping_quality.quality,
+                mapping_penalty: mapping_quality.penalty,
                 supporting_concepts,
                 why,
-            }
+            })
         })
         .collect();
 
@@ -1335,6 +1556,7 @@ fn run_scenario_by_id(
                     id: "lesson_1".to_string(),
                     item_type: "note".to_string(),
                     title: "Lesson 1".to_string(),
+                    domain_id: Some("sim".to_string()),
                 },
             );
 
@@ -1577,6 +1799,20 @@ pub fn olm_upsert_content_item(
         return Err("Content id, type and title are required".to_string());
     }
 
+    if let Some(domain_id) = item.domain_id.as_deref() {
+        let clean = domain_id.trim();
+        if clean.is_empty() {
+            return Err("domain_id cannot be empty when provided".to_string());
+        }
+
+        let valid = clean
+            .chars()
+            .all(|ch| ch.is_ascii_lowercase() || ch.is_ascii_digit() || ch == '-' || ch == '.');
+        if !valid {
+            return Err("domain_id must use lowercase letters, numbers, '-' or '.'".to_string());
+        }
+    }
+
     let mut store = state.inner.lock().map_err(|_| "State lock poisoned")?;
     store.content_items.insert(item.id.clone(), item.clone());
     Ok(item)
@@ -1589,6 +1825,14 @@ pub fn olm_map_content_concept(
 ) -> Result<ContentConceptMap, String> {
     let mut store = state.inner.lock().map_err(|_| "State lock poisoned")?;
 
+    if map.content_id.trim().is_empty() || map.concept_id.trim().is_empty() {
+        return Err("content_id and concept_id are required".to_string());
+    }
+
+    let Some(coverage_weight) = finite_weight(map.coverage_weight) else {
+        return Err("coverage_weight must be a finite number > 0".to_string());
+    };
+
     if !store.content_items.contains_key(&map.content_id) {
         return Err("Content item must exist before mapping".to_string());
     }
@@ -1598,7 +1842,7 @@ pub fn olm_map_content_concept(
     }
 
     let normalized = ContentConceptMap {
-        coverage_weight: clamp_01(map.coverage_weight),
+        coverage_weight: clamp_01(coverage_weight),
         ..map
     };
 
@@ -2072,7 +2316,7 @@ pub fn olm_next_content_to_study(
     lambda: Option<f64>,
     readiness_threshold: Option<f64>,
     domain_filter: Option<String>,
-    content_prefix: Option<String>,
+    domain_id: Option<String>,
     exclude: Option<Vec<String>>,
 ) -> Result<Vec<NextContentToStudyItem>, String> {
     let store = state.inner.lock().map_err(|_| "State lock poisoned")?;
@@ -2086,7 +2330,7 @@ pub fn olm_next_content_to_study(
         readiness_threshold.unwrap_or(config.theta),
         &exclude_set,
         domain_filter.as_deref(),
-        content_prefix.as_deref(),
+        domain_id.as_deref(),
     ))
 }
 
@@ -2246,8 +2490,33 @@ mod tests {
     #[test]
     fn test_metacognitive_weight_zero_strength() {
         let e = make_event("quiz_attempt", json!({"correct": 1.0, "total": 1.0, "confidence": 0.8}));
-        let (w, _) = metacognitive_signal(&e, Some(1.0), 0.0);
-        assert_eq!(w, 1.0, "meta_strength=0 should give weight=1.0");
+        let meta = metacognitive_signal(&e, Some(1.0), 1.0, 0.0, 0, 0);
+        assert_eq!(meta.effective_weight, 1.0, "meta_strength=0 should give weight=1.0");
+        assert!((meta.effective_score - 1.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn test_metacognitive_session_cap_reduces_reliability() {
+        let e = make_event("self_assessment", json!({"score": 1.0, "confidence": 0.9, "effort": 0.8}));
+        let no_cap = metacognitive_signal(&e, None, 1.0, 0.6, 5, 0);
+        let with_cap = metacognitive_signal(&e, None, 1.0, 0.6, 5, 6);
+
+        assert!(
+            with_cap.reliability < no_cap.reliability,
+            "session cap should reduce reliability for repeated self_assessment"
+        );
+    }
+
+    #[test]
+    fn test_metacognitive_low_reliability_shrinks_score_towards_neutral() {
+        let e = make_event("self_assessment", json!({"score": 1.0, "confidence": 0.05, "effort": 0.2}));
+        let meta = metacognitive_signal(&e, None, 1.0, 0.8, 0, 8);
+
+        assert!(
+            meta.effective_score < 0.9,
+            "low reliability should shrink effective score away from extreme values"
+        );
+        assert!(meta.effective_score > 0.5, "effective score should stay above neutral for raw score=1");
     }
 
     #[test]
@@ -2423,6 +2692,64 @@ mod tests {
     }
 
     #[test]
+    fn test_next_content_filters_by_domain_id() {
+        let mut store = OlmStore::default();
+
+        store.concepts.insert(
+            "math.core".to_string(),
+            Concept {
+                id: "math.core".to_string(),
+                name: "Math Core".to_string(),
+                description: None,
+            },
+        );
+
+        store.content_items.insert(
+            "math/item-1".to_string(),
+            ContentItem {
+                id: "math/item-1".to_string(),
+                item_type: "note".to_string(),
+                title: "Math Item".to_string(),
+                domain_id: Some("math".to_string()),
+            },
+        );
+        store.content_items.insert(
+            "physics/item-1".to_string(),
+            ContentItem {
+                id: "physics/item-1".to_string(),
+                item_type: "note".to_string(),
+                title: "Physics Item".to_string(),
+                domain_id: Some("physics".to_string()),
+            },
+        );
+
+        store.content_concepts.push(ContentConceptMap {
+            content_id: "math/item-1".to_string(),
+            concept_id: "math.core".to_string(),
+            coverage_weight: 1.0,
+        });
+        store.content_concepts.push(ContentConceptMap {
+            content_id: "physics/item-1".to_string(),
+            concept_id: "math.core".to_string(),
+            coverage_weight: 1.0,
+        });
+
+        let exclude = HashSet::new();
+        let rows = next_content_to_study_from_store(
+            &store,
+            Some(10),
+            0.7,
+            0.5,
+            &exclude,
+            Some("math"),
+            Some("math"),
+        );
+
+        assert!(rows.iter().all(|row| row.content_id.starts_with("math/")));
+        assert_eq!(rows.len(), 1);
+    }
+
+    #[test]
     fn test_readiness_soft_vs_strict_gating() {
         let mut store = OlmStore::default();
         store.concepts.insert(
@@ -2508,5 +2835,192 @@ mod tests {
         assert!(!cfg.decay_enabled);
         assert_eq!(cfg.uncertainty_formula, "standard");
         assert!(cfg.exclude_concepts.is_empty());
+    }
+
+    #[test]
+    fn test_flow_open_file_emits_review_signal() {
+        let mut store = OlmStore::default();
+        store.concepts.insert(
+            "math.algebra.core".to_string(),
+            Concept {
+                id: "math.algebra.core".to_string(),
+                name: "Math Algebra Core".to_string(),
+                description: None,
+            },
+        );
+
+        let event = StudyEvent {
+            event_id: "evt-open-1".to_string(),
+            timestamp: "2026-02-01T10:00:00Z".to_string(),
+            source: "editor".to_string(),
+            event_type: "review".to_string(),
+            content_id: Some("Matematica/algebra.md".to_string()),
+            concept_ids: vec!["math.algebra.core".to_string()],
+            payload: json!({
+                "duration_sec": 60.0,
+                "target_duration_sec": 120.0,
+                "confidence": 0.6,
+                "file_path": "Matematica/algebra.md"
+            }),
+        };
+
+        ingest_into_store(&mut store, &event, 0.6).expect("review event should ingest");
+
+        assert_eq!(store.study_events.len(), 1);
+        let evidence = store
+            .evidence
+            .get("math.algebra.core")
+            .expect("evidence should be present for mapped concept");
+        assert_eq!(evidence.len(), 1);
+        assert_eq!(evidence[0].event_type, "review");
+    }
+
+    #[test]
+    fn test_flow_quiz_save_triggers_test_end_self_assessment() {
+        let mut store = OlmStore::default();
+        store.concepts.insert(
+            "math.meta.reflection".to_string(),
+            Concept {
+                id: "math.meta.reflection".to_string(),
+                name: "Math Meta Reflection".to_string(),
+                description: None,
+            },
+        );
+
+        let event = StudyEvent {
+            event_id: "evt-test-end-1".to_string(),
+            timestamp: "2026-02-01T10:05:00Z".to_string(),
+            source: "meta_prompt".to_string(),
+            event_type: "self_assessment".to_string(),
+            content_id: Some("Matematica/quiz-2026-02-01-algebra.md".to_string()),
+            concept_ids: vec!["math.meta.reflection".to_string()],
+            payload: json!({
+                "score": 0.66,
+                "confidence": 0.75,
+                "meta_reflection_rating": 3,
+                "meta_trigger": "test_end"
+            }),
+        };
+
+        ingest_into_store(&mut store, &event, 0.6)
+            .expect("test_end self_assessment should ingest");
+
+        assert_eq!(store.study_events.len(), 1);
+        assert_eq!(
+            store.study_events[0]
+                .payload
+                .get("meta_trigger")
+                .and_then(Value::as_str),
+            Some("test_end")
+        );
+
+        let evidence = store
+            .evidence
+            .get("math.meta.reflection")
+            .expect("meta reflection concept should receive evidence");
+        assert_eq!(evidence.len(), 1);
+        assert_eq!(evidence[0].event_type, "self_assessment");
+    }
+
+    #[test]
+    fn test_flow_domain_switch_triggers_self_assessment() {
+        let mut store = OlmStore::default();
+        store.concepts.insert(
+            "physics.meta.reflection".to_string(),
+            Concept {
+                id: "physics.meta.reflection".to_string(),
+                name: "Physics Meta Reflection".to_string(),
+                description: None,
+            },
+        );
+
+        let event = StudyEvent {
+            event_id: "evt-domain-switch-1".to_string(),
+            timestamp: "2026-02-01T11:00:00Z".to_string(),
+            source: "meta_prompt".to_string(),
+            event_type: "self_assessment".to_string(),
+            content_id: Some("_meta/physics/reflection".to_string()),
+            concept_ids: vec!["physics.meta.reflection".to_string()],
+            payload: json!({
+                "score": 0.33,
+                "confidence": 0.5,
+                "meta_reflection_rating": 2,
+                "meta_trigger": "domain_switch"
+            }),
+        };
+
+        ingest_into_store(&mut store, &event, 0.6)
+            .expect("domain_switch self_assessment should ingest");
+
+        assert_eq!(store.study_events.len(), 1);
+        assert_eq!(
+            store.study_events[0]
+                .payload
+                .get("meta_trigger")
+                .and_then(Value::as_str),
+            Some("domain_switch")
+        );
+        assert_eq!(
+            store.study_events[0].content_id.as_deref(),
+            Some("_meta/physics/reflection")
+        );
+    }
+
+    #[test]
+    fn test_next_content_domain_id_filter_without_concept_prefix_dependency() {
+        let mut store = OlmStore::default();
+
+        store.concepts.insert(
+            "cross.shared".to_string(),
+            Concept {
+                id: "cross.shared".to_string(),
+                name: "Shared Concept".to_string(),
+                description: None,
+            },
+        );
+
+        store.content_items.insert(
+            "math/item-a".to_string(),
+            ContentItem {
+                id: "math/item-a".to_string(),
+                item_type: "note".to_string(),
+                title: "Math Item A".to_string(),
+                domain_id: Some("math".to_string()),
+            },
+        );
+        store.content_items.insert(
+            "physics/item-b".to_string(),
+            ContentItem {
+                id: "physics/item-b".to_string(),
+                item_type: "note".to_string(),
+                title: "Physics Item B".to_string(),
+                domain_id: Some("physics".to_string()),
+            },
+        );
+
+        store.content_concepts.push(ContentConceptMap {
+            content_id: "math/item-a".to_string(),
+            concept_id: "cross.shared".to_string(),
+            coverage_weight: 1.0,
+        });
+        store.content_concepts.push(ContentConceptMap {
+            content_id: "physics/item-b".to_string(),
+            concept_id: "cross.shared".to_string(),
+            coverage_weight: 1.0,
+        });
+
+        let exclude = HashSet::new();
+        let rows = next_content_to_study_from_store(
+            &store,
+            Some(10),
+            0.7,
+            0.5,
+            &exclude,
+            None,
+            Some("math"),
+        );
+
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].content_id, "math/item-a");
     }
 }
