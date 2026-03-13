@@ -30,7 +30,7 @@ Este e o documento tecnico canonico para arquitetura, logica OLM e decisoes de i
 - `src/hooks/useFileSystem.jsx`
 - Estado operacional de arvore/ficheiro/editor.
 - Persistencia de analytics e perfis via `rootDataStore`.
-- Ingestao automatica no OLM.
+- Ingestao automatica no OLM baseada em conceitos inline (`;;;conceito;;;`) e prerequisitos inline (`;;;conceito:prereq;;;`).
 - Check-ins metacognitivos 1..4 por tempo, fim de teste e transicao de dominio.
 
 - `src/components/insights/KnowledgeLevels.jsx`
@@ -39,6 +39,8 @@ Este e o documento tecnico canonico para arquitetura, logica OLM e decisoes de i
 
 - `src/components/olm/OlmPanel.jsx`
 - Operacoes manuais OLM (ingestao, explain, ranking, debug).
+- Visualizacao interativa de grafo de conceitos/arestas com filtro textual, arestas direcionais e selecao de conceito para abrir evidencias + ficheiros associados.
+- Largura do painel ajustavel por drag na borda/canto direito para melhor encaixe no layout.
 
 - `src/components/settings/AppSettingsPanel.jsx`
 - Config da app + parametros OLM por dominio.
@@ -66,8 +68,9 @@ Este e o documento tecnico canonico para arquitetura, logica OLM e decisoes de i
 2. `Main.handleOpenNode` define contexto de dominio.
 3. `useFileSystem.openFile` le conteudo.
 4. Atualiza analytics/perfis.
-5. Extrai conceitos inline (`;;;conceito;;;`).
-6. Envia evento `review` ao OLM.
+5. Extrai conceitos inline (`;;;conceito;;;`) e prerequisitos (`;;;conceito:prereq;;;`).
+6. Faz upsert dos conceitos inline declarados e dos pré-requisitos inferidos, cria arestas prereq->target e atualiza `content_concepts` apenas para os conceitos declarados no ficheiro.
+7. Envia evento `review` ao OLM apenas com os conceitos inline declarados.
 
 ### 4.2 Guardar ficheiro
 
@@ -86,6 +89,7 @@ Este e o documento tecnico canonico para arquitetura, logica OLM e decisoes de i
 - OLM e estado de app ja estao centralizados no root (`.projectl-data`).
 - `.projectl-data` esta oculto no filetree da app.
 - O backend e concept-first; item ranking depende da qualidade de `content_concepts`.
+- Ficheiro nao e promovido automaticamente a conceito; o sinal conceitual vem de marcacoes inline no conteudo.
 - Eventos automaticos existem, mas a cobertura de eventos objetivos ainda e parcial.
 - Check-in metacognitivo 1..4 adiciona sinal subjetivo util, mas suscetivel a ruido.
 - Segmentacao de recomendacao por item agora usa `domain_id` explicito em `content_items`.

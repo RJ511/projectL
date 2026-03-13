@@ -56,10 +56,24 @@ O painel **OLM** permite gerir o modelo de aprendizagem:
 
 - **Novo conceito**: cria um conceito manualmente (`id` + `nome`).
 - **Pré-requisito**: liga conceitos (prereq -> alvo).
+- **Concept Graph**: visualiza conceitos e arestas num grafo com filtro por `id` ou nome.
+- **Concept Graph (interativo)**: nós clicáveis para abrir Evidence, arestas com direção (setas) e lista de ficheiros associados ao conceito selecionado.
+- **Painel OLM ajustável**: arrasta com o rato na borda direita ou no canto inferior direito para personalizar a largura do painel.
 - **Evento**: injeta eventos manuais (`practice_attempt`, `quiz_attempt`, etc.).
 - **Estado**: mostra `mastery` e `uncertainty` por conceito.
 - **Next to study**: recomendações com justificações.
 - **Explicação**: rasto de evidências por conceito.
+
+Como usar o filtro do grafo:
+
+1. No bloco **Concept Graph**, escreve parte do `id` ou nome do conceito.
+2. O painel mostra os conceitos correspondentes e expande para vizinhos diretos ligados por arestas.
+3. Limpa o campo para voltar a ver o grafo completo do domínio ativo.
+
+Interação adicional:
+
+1. Clica num nó no grafo para abrir as evidências desse conceito no bloco **Evidence**.
+2. No mesmo bloco, vês os ficheiros atualmente mapeados para esse conceito.
 
 ## 5) Eventos automáticos já integrados
 
@@ -68,10 +82,17 @@ Sem ação extra do utilizador:
 - Ao **abrir um ficheiro**, é registado um evento `review`.
 - Ao **guardar um ficheiro**, não é injetado evento automático por omissão.
 
-Os eventos automáticos usam o conceito do **perfil do nó** (ficheiro/pasta/domínio).
+Os eventos automáticos do editor usam apenas os conceitos declarados no conteúdo do ficheiro (o ficheiro não vira conceito por defeito).
 
-Também é possível declarar conceitos diretamente no conteúdo usando `;;;nome do conceito;;;`.
-Esses conceitos são normalizados para IDs namespaced por domínio e entram no fluxo OLM.
+Sintaxe suportada no conteúdo:
+
+- `;;;nome do conceito;;;`
+- `;;;conceito:prereq;;;`
+- `;;;conceito:pr1,pr2;;;`
+
+Esses conceitos são normalizados para IDs namespaced por domínio (`<dominio>.inline.<slug>`), e os pré-requisitos geram arestas `prereq -> conceito` no grafo OLM.
+
+Quando usas `;;;conceito:prereq;;;`, o `prereq` também é criado/atualizado como conceito inline (se ainda não existir), para a aresta ser válida no OLM.
 
 ## 6) Validação rápida
 

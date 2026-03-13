@@ -97,7 +97,7 @@ Leitura é explicitamente limitada para ter impacto mais fraco.
 
 ### d) `note_taking`
 
-- $s = clamp(\dfrac{chars\_written}{target\_chars}, 0, 1) \times 0.35$
+- $$s = clamp(\dfrac{chars\_written}{target\_chars}, 0, 1) \times 0.35$$
 
 `note_taking` mede produção de notas com impacto deliberadamente baixo.
 
@@ -199,6 +199,20 @@ Nota de robustez (v2):
 
 ## 6) Lógica de recomendação (`next_to_study`)
 
+### 6.0 Como pré-requisitos entram no grafo
+
+No fluxo atual do editor, pré-requisitos são inferidos a partir de marcação inline no conteúdo:
+
+- `;;;conceito;;;` -> cria/atualiza conceito inline
+- `;;;conceito:prereq;;;` -> cria/atualiza `conceito`, cria/atualiza `prereq` (se não existir) e adiciona aresta `prereq -> conceito`
+- `;;;conceito:pr1,pr2;;;` -> adiciona múltiplas arestas (`pr1 -> conceito`, `pr2 -> conceito`)
+
+Todos os IDs são normalizados para o namespace do domínio no formato `<domínio>.inline.<slug>`.
+
+Nota operacional:
+
+- `content_concepts` e eventos automáticos de `review` usam apenas os conceitos explicitamente declarados no lado esquerdo da marcação (`conceito`), não os pré-requisitos inferidos.
+
 ## 6.1 Readiness por pré-requisito
 
 Para cada conceito alvo `c`:
@@ -284,15 +298,16 @@ A segmentação por domínio pode ser reforçada com:
 2. **Domain-aware ranking**: endpoint para `next_to_study` por domínio.
 3. **Item metrics reais**: acertos/erros por ficheiro em vez de proxy por tamanho. ✅ Implementado via `olm_get_content_metrics`.
 4. **Decay temporal**: reduzir ligeiramente evidência antiga. ✅ Implementado no cálculo de estado efetivo quando `decay_enabled=true`.
-5. **Qualidade de mapping**: aumentar uso de `content_concepts` para precisão. ✅ Eventos automáticos do editor agora registam `content_id`, criam `content_item` e mapeiam `content_concept`.
+5. **Qualidade de mapping**: aumentar uso de `content_concepts` para precisão. ✅ Eventos automáticos do editor agora registam `content_id`, criam `content_item` e mapeiam 1..N conceitos inline do conteúdo.
 
 ## 10) Factos e limites atuais
 
 - Estado OLM é **persistido** em `.projectl-data/olm_state.json` via `olm_save_state` / `olm_load_state` (atomic write com rename).
 - Eventos automáticos editor -> OLM estão ativos com `review` ao abrir ficheiro (`openFile` em `useFileSystem.jsx`).
 - Guardar ficheiros de teste/quiz (`quiz-*` / `teste-*`) pode disparar check-in metacognitivo 1-4 e ingestão `self_assessment`.
-- Eventos automáticos usam conceito por **perfil do nó** (ficheiro/pasta/domínio), com defaults e edição manual no Settings.
-- O conteúdo pode declarar conceitos inline com `;;;nome do conceito;;;` (compatível com `;;nome do conceito;;`), mapeados para IDs `<domínio>.inline.<slug>`.
+- Eventos automáticos do editor só ingerem conceito(s) quando existem marcações inline no ficheiro (não promovem o ficheiro a conceito por defeito).
+- O conteúdo pode declarar conceitos inline com `;;;nome do conceito;;;` e pré-requisitos com `;;;conceito:prereq;;;` (múltiplos: `;;;conceito:pr1,pr2;;;`), mapeados para IDs `<domínio>.inline.<slug>`.
+- O catálogo canónico de conceitos inline fica persistido em `.projectl-data/app_state.json` na chave `inlineConceptCatalog.v1`, no formato `concept_id -> { name, requires[] }`.
 - Fórmulas já implementadas com defaults robustos (fallbacks para score, confidence e readiness).
 - Existe limite de 200 evidências por conceito para controlar crescimento.
 - `stop_mastery` e `exclude_concepts` permitem mitigar root-bias e excluir conceitos ruidosos.
@@ -441,7 +456,7 @@ Ou seja, `meta_raw` é o score metacognitivo composto (pré-intensidade), e `met
 
 No update real atual (`olm_ingest_event`), o backend usa `meta_strength = 0.6` (balanced) como constante.
 
-### 12.5 Mitigação de viés metacognitivo (Fase 2)
+### 12.5 Mitigação de viés metacognitivo
 
 Para reduzir sobre-ajuste por autoavaliações subjetivas, o runtime aplica quatro salvaguardas:
 

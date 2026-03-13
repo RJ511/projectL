@@ -9,6 +9,7 @@ import {
   renameFile,
 } from "../services/fs.service";
 import {
+  addEdge,
   ingestEvent,
   mapContentConcept,
   upsertConcept,
@@ -22,7 +23,8 @@ import {
 
 const NODE_LEARNING_PROFILES_KEY = "nodeLearningProfiles.v1";
 const LEARNING_ANALYTICS_KEY = "learningAnalytics.v1";
-const INLINE_CONCEPT_REGEX = /(;{2,3})\s*([^;\n][^;\n]{0,80}?)\s*\1/g;
+const INLINE_CONCEPT_CATALOG_KEY = "inlineConceptCatalog.v1";
+const INLINE_CONCEPT_REGEX = /(;{2,3})\s*([^;\n][^;\n]{0,160}?)\s*\1/g;
 const META_MIN_SESSION_SEC = 12 * 60;
 const META_COOLDOWN_MS = 5 * 60 * 1000;
 const META_QUESTIONS = [
@@ -114,29 +116,97 @@ function defaultDifficulty(kind) {
   return 0.5;
 }
 
-function extractInlineConcepts(content, domainId) {
+function parseInlineConceptToken(rawToken = "") {
+  const token = String(rawToken || "").trim();
+  if (!token) return null;
+
+  const [rawConceptLabel, ...rawRequiresParts] = token.split(":");
+  const conceptLabel = String(rawConceptLabel || "").trim();
+  if (!conceptLabel) return null;
+
+  const prereqLabels = rawRequiresParts
+    .join(":")
+    .split(",")
+    .map((item) => item.trim())
+    .filter(Boolean);
+
+  return {
+    conceptLabel,
+    prereqLabels,
+  };
+}
+
+function extractInlineConceptGraph(content, domainId) {
   const text = String(content || "");
-  if (!text) return [];
-
-  const byId = new Map();
-
-  for (const match of text.matchAll(INLINE_CONCEPT_REGEX)) {
-    const rawLabel = String(match?.[2] || "").trim();
-    if (!rawLabel) continue;
-
-    const conceptId = normalizeConceptId(`inline.${rawLabel}`, domainId);
-    if (!conceptId) continue;
-
-    if (!byId.has(conceptId)) {
-      byId.set(conceptId, {
-        id: conceptId,
-        name: rawLabel,
-        description: `Conceito inline extraído de marcação ;;;${rawLabel};;;`,
-      });
-    }
+  if (!text) {
+    return {
+      concepts: [],
+      edges: [],
+      conceptIds: [],
+    };
   }
 
-  return Array.from(byId.values());
+  const byId = new Map();
+  const declaredConceptIds = new Set();
+  const edgeKeySet = new Set();
+  const edges = [];
+
+  for (const match of text.matchAll(INLINE_CONCEPT_REGEX)) {
+    const token = parseInlineConceptToken(match?.[2] || "");
+    if (!token) continue;
+
+    const conceptId = normalizeConceptId(
+      `inline.${token.conceptLabel}`,
+      domainId,
+    );
+    if (!conceptId) continue;
+    declaredConceptIds.add(conceptId);
+
+    const requires = byId.get(conceptId)?.requires || new Set();
+
+    for (const prereqLabel of token.prereqLabels) {
+      const prereqId = normalizeConceptId(`inline.${prereqLabel}`, domainId);
+      if (!prereqId || prereqId === conceptId) continue;
+      requires.add(prereqId);
+
+      if (!byId.has(prereqId)) {
+        byId.set(prereqId, {
+          id: prereqId,
+          name: prereqLabel,
+          description: `Conceito pré-requisito inferido de marcação ;;;${token.conceptLabel}:${prereqLabel};;;`,
+          requires: new Set(),
+        });
+      }
+
+      const edgeKey = `${prereqId}=>${conceptId}`;
+      if (!edgeKeySet.has(edgeKey)) {
+        edgeKeySet.add(edgeKey);
+        edges.push({ prereq_id: prereqId, target_id: conceptId });
+      }
+    }
+
+    byId.set(conceptId, {
+      id: conceptId,
+      name: token.conceptLabel,
+      description: `Conceito inline extraído de marcação ;;;${token.conceptLabel};;;`,
+      requires,
+    });
+  }
+
+  const concepts = Array.from(byId.values()).map((concept) => ({
+    id: concept.id,
+    name: concept.name,
+    description: concept.description,
+    requires: Array.from(concept.requires).sort((a, b) => a.localeCompare(b)),
+  }));
+
+  const conceptIds = Array.from(declaredConceptIds);
+
+  return {
+    concepts,
+    edges,
+    conceptIds,
+  };
 }
 
 function buildDefaultProfile(node) {
@@ -682,19 +752,95 @@ export function useFileSystem(rootPath) {
     return parts.length > 1 ? parts.pop().toLowerCase() : "";
   }
 
-  async function ensureInlineConceptCatalog(node, editorContent = "") {
-    if (!rootPath || !node || node.is_dir) return;
+  async function updateInlineConceptCatalog(contentId, domainId, graph) {
+    if (!rootPath || !contentId || !graph) return;
+
+    const nowIso = new Date().toISOString();
+    const currentCatalog = await getRootStateValue(
+      rootPath,
+      INLINE_CONCEPT_CATALOG_KEY,
+      {},
+    );
+    const nextCatalog = {
+      ...(currentCatalog && typeof currentCatalog === "object"
+        ? currentCatalog
+        : {}),
+    };
+
+    for (const concept of graph.concepts || []) {
+      const existing = nextCatalog[concept.id] || {};
+      nextCatalog[concept.id] = {
+        ...existing,
+        id: concept.id,
+        name: concept.name,
+        requires: Array.isArray(concept.requires) ? concept.requires : [],
+        domain_id: domainId,
+        last_seen_content_id: contentId,
+        updated_at: nowIso,
+      };
+    }
+
+    await setRootStateValue(rootPath, INLINE_CONCEPT_CATALOG_KEY, nextCatalog);
+  }
+
+  async function syncInlineConceptGraph(node, editorContent = "") {
+    if (!rootPath || !node || node.is_dir) {
+      return { profile: null, contentId: "", conceptIds: [] };
+    }
 
     const profile =
       getProfile(node) || ensureProfile(node) || buildDefaultProfile(node);
-    const inlineConcepts = extractInlineConcepts(
-      editorContent,
-      profile.domainId,
-    );
+    const contentId = normalize(node.path);
+    const graph = extractInlineConceptGraph(editorContent, profile.domainId);
 
-    for (const concept of inlineConcepts) {
-      await upsertConcept(concept);
+    if (!graph.concepts.length) {
+      return { profile, contentId, conceptIds: [] };
     }
+
+    for (const concept of graph.concepts) {
+      await upsertConcept({
+        id: concept.id,
+        name: concept.name,
+        description: concept.description,
+      });
+    }
+
+    for (const edge of graph.edges) {
+      await addEdge(edge);
+    }
+
+    await upsertContentItem({
+      id: contentId,
+      item_type: "note",
+      title: node.name,
+      domain_id: profile.domainId,
+    });
+
+    const declaredConceptSet = new Set(graph.conceptIds || []);
+    for (const concept of graph.concepts) {
+      if (!declaredConceptSet.has(concept.id)) {
+        continue;
+      }
+      await mapContentConcept({
+        content_id: contentId,
+        concept_id: concept.id,
+        coverage_weight: 1.0,
+      });
+    }
+
+    await updateInlineConceptCatalog(contentId, profile.domainId, graph);
+
+    return {
+      profile,
+      contentId,
+      conceptIds: graph.conceptIds,
+    };
+  }
+
+  async function ensureInlineConceptCatalog(node, editorContent = "") {
+    if (!rootPath || !node || node.is_dir) return;
+
+    await syncInlineConceptGraph(node, editorContent);
   }
 
   async function trackOlmEvent(
@@ -706,40 +852,16 @@ export function useFileSystem(rootPath) {
     if (!rootPath || !node || node.is_dir) return;
 
     const eventDate = new Date();
-    const profile =
-      getProfile(node) || ensureProfile(node) || buildDefaultProfile(node);
-
-    const concept = {
-      id: profile.conceptId,
-      name: profile.conceptName,
-      description: `Conceito automático para ${profile.kind}: ${profile.path}`,
-    };
-    const inlineConcepts = extractInlineConcepts(
-      editorContent,
-      profile.domainId,
-    );
-    const conceptIds = [
-      concept.id,
-      ...inlineConcepts.map((inlineConcept) => inlineConcept.id),
-    ];
-    const contentId = normalize(node.path);
 
     try {
-      await upsertConcept(concept);
-      for (const inlineConcept of inlineConcepts) {
-        await upsertConcept(inlineConcept);
+      const { profile, contentId, conceptIds } = await syncInlineConceptGraph(
+        node,
+        editorContent,
+      );
+
+      if (!profile || !conceptIds.length) {
+        return;
       }
-      await upsertContentItem({
-        id: contentId,
-        item_type: "note",
-        title: node.name,
-        domain_id: profile.domainId,
-      });
-      await mapContentConcept({
-        content_id: contentId,
-        concept_id: concept.id,
-        coverage_weight: 1.0,
-      });
 
       await ingestEvent({
         event_id: `evt-${eventDate.getTime()}-${Math.floor(Math.random() * 100000)}`,

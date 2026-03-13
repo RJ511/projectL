@@ -1,12 +1,14 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { ChevronLeft, ChevronRight, Sparkles, Target } from "lucide-react";
 import {
   addEdge,
+  exportOlmJson,
   getExplain,
   getContentMetrics,
   getOlmState,
   ingestEvent,
   listConcepts,
+  listEdges,
   nextToStudy,
   upsertConcept,
 } from "../../services/olm.service";
@@ -42,13 +44,33 @@ export default function OlmPanel({
 
   const [concepts, setConcepts] = useState([]);
   const [stateRows, setStateRows] = useState([]);
+  const [edges, setEdges] = useState([]);
   const [recommendations, setRecommendations] = useState([]);
   const [contentMetrics, setContentMetrics] = useState([]);
+  const [graphFilter, setGraphFilter] = useState("");
+  const [conceptFilesById, setConceptFilesById] = useState({});
   const [selectedExplainId, setSelectedExplainId] = useState("");
   const [explainRows, setExplainRows] = useState([]);
   const [error, setError] = useState("");
-  const drawerLeft = 48;
-  const drawerWidth = 296;
+  const resizeRef = useRef(null);
+  const contentAreaRef = useRef(null);
+  const [viewportWidth, setViewportWidth] = useState(() => {
+    if (typeof window === "undefined") return 1280;
+    return window.innerWidth;
+  });
+  const [contentAreaWidth, setContentAreaWidth] = useState(220);
+  const minDrawerWidth = 220;
+  const maxDrawerWidth = 460;
+  const [drawerWidthPx, setDrawerWidthPx] = useState(260);
+  const drawerLeft = viewportWidth <= 720 ? 0 : 48;
+  const drawerMaxByViewport = Math.max(
+    minDrawerWidth,
+    viewportWidth - drawerLeft - 8,
+  );
+  const drawerWidth = Math.min(
+    Math.min(maxDrawerWidth, drawerMaxByViewport),
+    Math.max(minDrawerWidth, drawerWidthPx),
+  );
   const domainPrefix = useMemo(() => {
     const slug = (activeDomain || "")
       .normalize("NFD")
@@ -81,19 +103,166 @@ export default function OlmPanel({
     };
   }, [stateRows]);
 
+  useEffect(() => {
+    function onResize() {
+      setViewportWidth(window.innerWidth);
+    }
+
+    window.addEventListener("resize", onResize);
+    return () => window.removeEventListener("resize", onResize);
+  }, []);
+
+  useEffect(() => {
+    setDrawerWidthPx((prev) =>
+      Math.min(
+        Math.max(prev, minDrawerWidth),
+        Math.min(maxDrawerWidth, drawerMaxByViewport),
+      ),
+    );
+  }, [drawerMaxByViewport]);
+
+  useEffect(() => {
+    const element = contentAreaRef.current;
+    if (!element) return;
+
+    function updateWidth() {
+      const next = element.clientWidth;
+      if (next > 0) setContentAreaWidth(next);
+    }
+
+    updateWidth();
+
+    const observer = new ResizeObserver(() => updateWidth());
+    observer.observe(element);
+
+    return () => observer.disconnect();
+  }, [drawerWidth, open]);
+
+  function startPanelResize(event) {
+    event.preventDefault();
+    event.stopPropagation();
+
+    resizeRef.current = {
+      startX: event.clientX,
+      startWidth: drawerWidth,
+    };
+
+    function onPointerMove(moveEvent) {
+      if (!resizeRef.current) return;
+      const deltaX = moveEvent.clientX - resizeRef.current.startX;
+      const proposed = resizeRef.current.startWidth + deltaX;
+      const clamped = Math.min(
+        Math.min(maxDrawerWidth, drawerMaxByViewport),
+        Math.max(minDrawerWidth, proposed),
+      );
+      setDrawerWidthPx(clamped);
+    }
+
+    function stopPanelResize() {
+      resizeRef.current = null;
+      window.removeEventListener("mousemove", onPointerMove);
+      window.removeEventListener("mouseup", stopPanelResize);
+    }
+
+    window.addEventListener("mousemove", onPointerMove);
+    window.addEventListener("mouseup", stopPanelResize);
+  }
+
+  const graphData = useMemo(() => {
+    if (concepts.length === 0) {
+      return { nodes: [], edges: [] };
+    }
+
+    const byId = new Map(concepts.map((concept) => [concept.id, concept]));
+    const term = graphFilter.trim().toLowerCase();
+    let selectedIds = new Set(concepts.map((concept) => concept.id));
+
+    if (term) {
+      const matched = concepts
+        .filter((concept) => {
+          const name = String(concept.name || "").toLowerCase();
+          const id = String(concept.id || "").toLowerCase();
+          return name.includes(term) || id.includes(term);
+        })
+        .map((concept) => concept.id);
+
+      const expanded = new Set(matched);
+      for (const edge of edges) {
+        const touchesMatch =
+          expanded.has(edge.prereq_id) || expanded.has(edge.target_id);
+        if (touchesMatch) {
+          expanded.add(edge.prereq_id);
+          expanded.add(edge.target_id);
+        }
+      }
+      selectedIds = expanded;
+    }
+
+    const filteredNodes = Array.from(selectedIds)
+      .map((id) => byId.get(id))
+      .filter(Boolean);
+
+    const filteredEdges = edges.filter(
+      (edge) =>
+        selectedIds.has(edge.prereq_id) && selectedIds.has(edge.target_id),
+    );
+
+    return {
+      nodes: filteredNodes,
+      edges: filteredEdges,
+    };
+  }, [concepts, edges, graphFilter]);
+
+  const graphLayout = useMemo(() => {
+    const width = Math.max(150, contentAreaWidth - 28);
+    const height = Math.max(156, Math.min(190, Math.round(width * 0.72)));
+    const cx = width / 2;
+    const cy = height / 2;
+    const count = graphData.nodes.length;
+    const radius = Math.max(48, Math.min(82, 22 + count * 4));
+    const nodePositions = new Map();
+    const ordered = [...graphData.nodes].sort((a, b) =>
+      String(a.id).localeCompare(String(b.id)),
+    );
+
+    ordered.forEach((node, index) => {
+      const angle = ((Math.PI * 2) / Math.max(1, count)) * index - Math.PI / 2;
+      nodePositions.set(node.id, {
+        x: cx + Math.cos(angle) * radius,
+        y: cy + Math.sin(angle) * radius,
+      });
+    });
+
+    return {
+      width,
+      height,
+      nodePositions,
+      nodes: ordered,
+      edges: graphData.edges,
+    };
+  }, [contentAreaWidth, graphData]);
+
+  const selectedConceptFiles = useMemo(() => {
+    if (!selectedExplainId) return [];
+    return conceptFilesById[selectedExplainId] || [];
+  }, [conceptFilesById, selectedExplainId]);
+
   async function refresh() {
     setError("");
     try {
-      const [conceptList, stateList, nextList] = await Promise.all([
-        listConcepts(),
-        getOlmState(),
-        nextToStudy({
-          top: 5,
-          lambda: 0.7,
-          readinessThreshold: 0.5,
-          domainFilter: domainPrefix,
-        }),
-      ]);
+      const [conceptList, edgeList, stateList, nextList, olmSnapshot] =
+        await Promise.all([
+          listConcepts(),
+          listEdges(),
+          getOlmState(),
+          nextToStudy({
+            top: 5,
+            lambda: 0.7,
+            readinessThreshold: 0.5,
+            domainFilter: domainPrefix,
+          }),
+          exportOlmJson(),
+        ]);
       const metrics = await getContentMetrics();
 
       const filteredConcepts = domainPrefix
@@ -102,16 +271,55 @@ export default function OlmPanel({
       const filteredState = domainPrefix
         ? stateList.filter((row) => row.concept_id.startsWith(domainPrefix))
         : stateList;
+      const filteredEdges = domainPrefix
+        ? edgeList.filter(
+            (edge) =>
+              String(edge.prereq_id || "").startsWith(domainPrefix) &&
+              String(edge.target_id || "").startsWith(domainPrefix),
+          )
+        : edgeList;
       const filteredMetrics = domainPrefix
         ? (metrics || []).filter((item) =>
             String(item.content_id || "").startsWith(`${activeDomain}/`),
           )
         : metrics || [];
+      const nextConceptFiles = {};
+      const contentItems =
+        olmSnapshot && typeof olmSnapshot.content_items === "object"
+          ? olmSnapshot.content_items
+          : {};
+      const contentConcepts = Array.isArray(olmSnapshot?.content_concepts)
+        ? olmSnapshot.content_concepts
+        : [];
+
+      for (const map of contentConcepts) {
+        const conceptKey = String(map?.concept_id || "");
+        if (!conceptKey) continue;
+        if (domainPrefix && !conceptKey.startsWith(domainPrefix)) continue;
+
+        const contentId = String(map?.content_id || "");
+        const item = contentItems[contentId];
+        const label = String(item?.title || contentId || "").trim();
+        if (!label) continue;
+
+        if (!nextConceptFiles[conceptKey]) {
+          nextConceptFiles[conceptKey] = [];
+        }
+        if (!nextConceptFiles[conceptKey].includes(label)) {
+          nextConceptFiles[conceptKey].push(label);
+        }
+      }
+
+      for (const conceptKey of Object.keys(nextConceptFiles)) {
+        nextConceptFiles[conceptKey].sort((a, b) => a.localeCompare(b));
+      }
 
       setConcepts(filteredConcepts);
       setStateRows(filteredState);
+      setEdges(filteredEdges);
       setRecommendations(nextList);
       setContentMetrics(filteredMetrics);
+      setConceptFilesById(nextConceptFiles);
     } catch (e) {
       setError(String(e));
     }
@@ -263,6 +471,7 @@ export default function OlmPanel({
           top: 0,
           left: drawerLeft,
           width: drawerWidth,
+          maxWidth: `calc(100vw - ${drawerLeft}px)`,
           height: "100vh",
           background: "#f8fbff",
           borderRight: "1px solid #d0dbef",
@@ -276,6 +485,8 @@ export default function OlmPanel({
             "transform 220ms ease, opacity 180ms ease, visibility 0s linear 220ms",
           display: "flex",
           flexDirection: "column",
+          overflowX: "hidden",
+          boxSizing: "border-box",
         }}
       >
         <div
@@ -313,19 +524,36 @@ export default function OlmPanel({
           </div>
         </div>
 
-        <div style={{ padding: 8, overflow: "auto", display: "grid", gap: 8 }}>
+        <div
+          ref={contentAreaRef}
+          style={{
+            padding: 8,
+            overflowY: "auto",
+            overflowX: "hidden",
+            display: "grid",
+            gridTemplateColumns: "minmax(0, 1fr)",
+            gap: 8,
+            minWidth: 0,
+            width: "100%",
+            boxSizing: "border-box",
+          }}
+        >
           <div
             style={{
               background: "#ffffff",
               border: "1px solid #dbe5f4",
               borderRadius: 10,
               padding: 8,
+              minWidth: 0,
+              width: "100%",
+              boxSizing: "border-box",
             }}
           >
             <div style={{ display: "flex", gap: 6, marginBottom: 6 }}>
               <div
                 style={{
                   flex: 1,
+                  minWidth: 0,
                   background: "#eef4ff",
                   borderRadius: 8,
                   padding: 6,
@@ -339,6 +567,7 @@ export default function OlmPanel({
               <div
                 style={{
                   flex: 1,
+                  minWidth: 0,
                   background: "#ecfeff",
                   borderRadius: 8,
                   padding: 6,
@@ -352,6 +581,7 @@ export default function OlmPanel({
               <div
                 style={{
                   flex: 1,
+                  minWidth: 0,
                   background: "#fff7ed",
                   borderRadius: 8,
                   padding: 6,
@@ -376,6 +606,9 @@ export default function OlmPanel({
               padding: 8,
               display: "grid",
               gap: 6,
+              minWidth: 0,
+              width: "100%",
+              boxSizing: "border-box",
             }}
           >
             <strong style={{ fontSize: 12 }}>Estado</strong>
@@ -404,7 +637,14 @@ export default function OlmPanel({
                       marginBottom: 3,
                     }}
                   >
-                    <span style={{ fontWeight: 600, fontSize: 12 }}>
+                    <span
+                      style={{
+                        fontWeight: 600,
+                        fontSize: 12,
+                        overflowWrap: "anywhere",
+                        wordBreak: "break-word",
+                      }}
+                    >
                       {row.name}
                     </span>
                     <span
@@ -442,6 +682,9 @@ export default function OlmPanel({
               padding: 8,
               display: "grid",
               gap: 6,
+              minWidth: 0,
+              width: "100%",
+              boxSizing: "border-box",
             }}
           >
             <strong style={{ fontSize: 12 }}>Item Metrics</strong>
@@ -465,7 +708,14 @@ export default function OlmPanel({
                       gap: 2,
                     }}
                   >
-                    <div style={{ fontSize: 11, fontWeight: 600 }}>
+                    <div
+                      style={{
+                        fontSize: 11,
+                        fontWeight: 600,
+                        overflowWrap: "anywhere",
+                        wordBreak: "break-word",
+                      }}
+                    >
                       {metric.title || metric.content_id}
                     </div>
                     <div style={{ fontSize: 10, color: "#64748b" }}>
@@ -486,6 +736,9 @@ export default function OlmPanel({
               padding: 8,
               display: "grid",
               gap: 6,
+              minWidth: 0,
+              width: "100%",
+              boxSizing: "border-box",
             }}
           >
             <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
@@ -511,11 +764,21 @@ export default function OlmPanel({
                     style={{
                       display: "flex",
                       justifyContent: "space-between",
+                      gap: 6,
                       marginBottom: 3,
                       fontSize: 11,
                     }}
                   >
-                    <strong style={{ fontSize: 12 }}>{item.name}</strong>
+                    <strong
+                      style={{
+                        fontSize: 12,
+                        minWidth: 0,
+                        overflowWrap: "anywhere",
+                        wordBreak: "break-word",
+                      }}
+                    >
+                      {item.name}
+                    </strong>
                     <span>{(item.score * 100).toFixed(0)}%</span>
                   </div>
                   <div
@@ -540,6 +803,159 @@ export default function OlmPanel({
               padding: 8,
               display: "grid",
               gap: 6,
+              minWidth: 0,
+              width: "100%",
+              boxSizing: "border-box",
+            }}
+          >
+            <strong style={{ fontSize: 12 }}>Concept Graph</strong>
+            <input
+              placeholder="Filtrar conceito (id ou nome)"
+              value={graphFilter}
+              onChange={(e) => setGraphFilter(e.target.value)}
+              style={{
+                padding: "6px 8px",
+                borderRadius: 8,
+                border: "1px solid #cbd5e1",
+                fontSize: 12,
+              }}
+            />
+            {graphLayout.nodes.length === 0 ? (
+              <div style={{ fontSize: 12, color: "#6b7280" }}>
+                Sem conceitos para desenhar no grafo.
+              </div>
+            ) : (
+              <div
+                style={{
+                  border: "1px solid #e2e8f0",
+                  borderRadius: 10,
+                  background:
+                    "radial-gradient(circle at 20% 20%, #f0f9ff 0%, #f8fbff 55%, #f1f5f9 100%)",
+                  padding: 6,
+                }}
+              >
+                <svg
+                  viewBox={`0 0 ${graphLayout.width} ${graphLayout.height}`}
+                  width="100%"
+                  height={graphLayout.height}
+                  role="img"
+                  aria-label="Grafo de conceitos e arestas"
+                >
+                  <defs>
+                    <marker
+                      id="olm-graph-arrow"
+                      viewBox="0 0 10 10"
+                      refX="9"
+                      refY="5"
+                      markerWidth="6"
+                      markerHeight="6"
+                      orient="auto-start-reverse"
+                    >
+                      <path d="M 0 0 L 10 5 L 0 10 z" fill="#64748b" />
+                    </marker>
+                  </defs>
+
+                  {graphLayout.edges.map((edge) => {
+                    const from = graphLayout.nodePositions.get(edge.prereq_id);
+                    const to = graphLayout.nodePositions.get(edge.target_id);
+                    if (!from || !to) return null;
+
+                    const dx = to.x - from.x;
+                    const dy = to.y - from.y;
+                    const len = Math.hypot(dx, dy) || 1;
+                    const ux = dx / len;
+                    const uy = dy / len;
+                    const nodeRadius = 11;
+                    const x1 = from.x + ux * nodeRadius;
+                    const y1 = from.y + uy * nodeRadius;
+                    const x2 = to.x - ux * (nodeRadius + 2);
+                    const y2 = to.y - uy * (nodeRadius + 2);
+
+                    return (
+                      <line
+                        key={`${edge.prereq_id}-${edge.target_id}`}
+                        x1={x1}
+                        y1={y1}
+                        x2={x2}
+                        y2={y2}
+                        stroke="#94a3b8"
+                        strokeWidth="1.5"
+                        strokeLinecap="round"
+                        markerEnd="url(#olm-graph-arrow)"
+                      />
+                    );
+                  })}
+
+                  {graphLayout.nodes.map((node) => {
+                    const pos = graphLayout.nodePositions.get(node.id);
+                    const stateRow = stateRows.find(
+                      (row) => row.concept_id === node.id,
+                    );
+                    const mastery = stateRow?.mastery ?? 0.5;
+                    const nodeFill =
+                      mastery >= 0.7
+                        ? "#86efac"
+                        : mastery >= 0.4
+                          ? "#fde68a"
+                          : "#fca5a5";
+                    const isSelected = selectedExplainId === node.id;
+
+                    if (!pos) return null;
+                    return (
+                      <g
+                        key={node.id}
+                        role="button"
+                        tabIndex={0}
+                        style={{ cursor: "pointer" }}
+                        onClick={() => onSelectExplain(node.id)}
+                        onKeyDown={(event) => {
+                          if (event.key === "Enter" || event.key === " ") {
+                            event.preventDefault();
+                            onSelectExplain(node.id);
+                          }
+                        }}
+                      >
+                        <title>{`Abrir evidências de ${node.name || node.id}`}</title>
+                        <circle
+                          cx={pos.x}
+                          cy={pos.y}
+                          r="11"
+                          fill={nodeFill}
+                          stroke={isSelected ? "#0f172a" : "#1e293b"}
+                          strokeWidth={isSelected ? "2" : "1"}
+                        />
+                        <text
+                          x={pos.x}
+                          y={pos.y + 25}
+                          textAnchor="middle"
+                          fontSize="9"
+                          fill="#334155"
+                        >
+                          {String(node.name || node.id).slice(0, 20)}
+                        </text>
+                      </g>
+                    );
+                  })}
+                </svg>
+              </div>
+            )}
+            <div style={{ fontSize: 10, color: "#64748b" }}>
+              nós: {graphLayout.nodes.length} · arestas:{" "}
+              {graphLayout.edges.length}
+            </div>
+          </div>
+
+          <div
+            style={{
+              background: "#ffffff",
+              border: "1px solid #dbe5f4",
+              borderRadius: 10,
+              padding: 8,
+              display: "grid",
+              gap: 6,
+              minWidth: 0,
+              width: "100%",
+              boxSizing: "border-box",
             }}
           >
             <strong style={{ fontSize: 12 }}>Quick Add</strong>
@@ -699,9 +1115,44 @@ export default function OlmPanel({
               padding: 8,
               display: "grid",
               gap: 6,
+              minWidth: 0,
+              width: "100%",
+              boxSizing: "border-box",
             }}
           >
             <strong style={{ fontSize: 12 }}>Evidence</strong>
+            {selectedExplainId ? (
+              <div
+                style={{
+                  fontSize: 10,
+                  color: "#64748b",
+                  background: "#f8fafc",
+                  border: "1px solid #e2e8f0",
+                  borderRadius: 8,
+                  padding: 6,
+                }}
+              >
+                <div style={{ fontWeight: 700, marginBottom: 4 }}>
+                  Ficheiros do conceito
+                </div>
+                {selectedConceptFiles.length === 0 ? (
+                  <div>Nenhum ficheiro mapeado para este conceito.</div>
+                ) : (
+                  selectedConceptFiles.slice(0, 8).map((label) => (
+                    <div
+                      key={label}
+                      style={{
+                        overflowWrap: "anywhere",
+                        wordBreak: "break-word",
+                      }}
+                      title={label}
+                    >
+                      - {label}
+                    </div>
+                  ))
+                )}
+              </div>
+            ) : null}
             {!selectedExplainId ? (
               <div style={{ fontSize: 12, color: "#6b7280" }}>
                 Clica num conceito para detalhes.
@@ -752,6 +1203,39 @@ export default function OlmPanel({
             </div>
           ) : null}
         </div>
+
+        <div
+          role="separator"
+          aria-label="Redimensionar painel OLM"
+          onMouseDown={startPanelResize}
+          style={{
+            position: "absolute",
+            top: 0,
+            right: -4,
+            width: 10,
+            height: "100%",
+            cursor: "ew-resize",
+            zIndex: 1001,
+          }}
+        />
+        <div
+          role="separator"
+          aria-label="Redimensionar painel OLM no canto"
+          onMouseDown={startPanelResize}
+          style={{
+            position: "absolute",
+            right: 2,
+            bottom: 2,
+            width: 14,
+            height: 14,
+            borderRight: "2px solid #94a3b8",
+            borderBottom: "2px solid #94a3b8",
+            borderRadius: 2,
+            cursor: "nwse-resize",
+            opacity: 0.7,
+            zIndex: 1002,
+          }}
+        />
       </aside>
     </>
   );

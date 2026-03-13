@@ -37,10 +37,10 @@ Este ficheiro é a referência rápida para **implementar, alterar ou explicar**
 - `src/hooks/useFileSystem.jsx`
   - Estado da árvore, ficheiro selecionado, abrir/guardar/criar/renomear.
   - Perfis por nó (conceito/dificuldade/domínio).
-  - Parsing de conceitos inline no editor via marcação `;;;conceito;;;` (compatível também com `;;conceito;;`).
-  - Eventos automáticos OLM (ex.: `review` ao abrir).
+  - Parsing de conceitos inline no editor via marcação `;;;conceito;;;` e pré-requisitos via `;;;conceito:prereq;;;` (múltiplos: `;;;conceito:pr1,pr2;;;`).
+  - Eventos automáticos OLM (ex.: `review` ao abrir) apenas com conceitos inline encontrados no ficheiro.
   - Telemetria de uso (`learningAnalytics`): tempo por ficheiro/domínio/sessão, aberturas, etc.
-  - Persistência de perfis e analytics via `rootDataStore` no root do projeto.
+  - Persistência de perfis, analytics e catálogo de conceitos inline (`inlineConceptCatalog.v1`) via `rootDataStore` no root do projeto.
 
 - `src/components/insights/KnowledgeLevels.jsx`
   - Painel contextual para Root/Domain.
@@ -100,12 +100,12 @@ Este ficheiro é a referência rápida para **implementar, alterar ou explicar**
 
 Regra atual: `conceptId` é sempre namespaced por domínio e pode incluir sub-domínios por pontos (ex.: `mathematics.calculus.calculo-1`).
 
-Também é possível declarar conceitos inline no conteúdo com `;;;conceito;;;`; esses conceitos são normalizados para IDs namespaced (`<domain>.inline.<slug>`) e usados no evento automático ao abrir ficheiro.
+Também é possível declarar conceitos inline no conteúdo com `;;;conceito;;;` e pré-requisitos com `;;;conceito:prereq;;;`; esses conceitos são normalizados para IDs namespaced (`<domain>.inline.<slug>`), com arestas `prereq -> conceito`, e usados no evento automático ao abrir ficheiro.
 
 ### O que influencia um concept
 
 1. Perfil do nó (`conceptId`, `difficulty`) em `useFileSystem.jsx`.
-2. Marcação inline no conteúdo (`;;;nome do conceito;;;`).
+2. Marcação inline no conteúdo (`;;;nome do conceito;;;`) e declaração de pré-requisitos (`;;;conceito:prereq;;;`).
 3. Eventos ingeridos (`review`, `practice_attempt`, etc.) e respetivo payload (`correct`, `total`, `confidence`, duração, etc.).
 4. Mapeamento conteúdo→conceito (`content_concepts`) e cobertura (`coverage_weight`).
 5. Config OLM (`meta_strength`, `gamma`, `lambda`, `soft_gate_k`, `decay_*`, etc.).

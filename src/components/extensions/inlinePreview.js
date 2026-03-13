@@ -101,7 +101,7 @@ export function inlinePreview() {
           }
 
           //
-          // 3.1) CONCEITOS INLINE: ;;;Nome do conceito;;;
+          // 3.1) CONCEITOS INLINE: ;;;Nome do conceito;;; ou ;;;conceito:prereq1,prereq2;;;
           //
           const conceptRe = /;;;\s*([^;\n][^;\n]{0,80}?)\s*;;;/g;
           while ((m = conceptRe.exec(text))) {
