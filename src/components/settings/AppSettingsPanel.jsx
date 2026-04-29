@@ -18,6 +18,8 @@ const OLM_CONFIG_BY_DOMAIN_KEY = "olmConfigByDomain.v1";
 const DEFAULT_OLM_CONFIG = {
   lambda: 0.7,
   gamma: 0.35,
+  readiness_distance_delta: 0.85,
+  ranking_policy: "adaptive",
   theta: 0.5,
   min_readiness: 0.1,
   soft_gate_k: 1.6,
@@ -29,6 +31,13 @@ const DEFAULT_OLM_CONFIG = {
   decay_enabled: false,
   decay_half_life_days: 30.0,
 };
+
+function normalizeOlmConfig(config) {
+  return {
+    ...DEFAULT_OLM_CONFIG,
+    ...(config || {}),
+  };
+}
 
 function isValidConceptId(value) {
   const id = String(value || "").trim();
@@ -94,18 +103,20 @@ export default function AppSettingsPanel({
       const existing = map?.[key];
 
       if (existing) {
-        setOlmConfigLocal(existing);
-        setExcludeInput((existing.exclude_concepts || []).join(", "));
-        setOlmConfig(existing).catch(() => {});
+        const normalized = normalizeOlmConfig(existing);
+        setOlmConfigLocal(normalized);
+        setExcludeInput((normalized.exclude_concepts || []).join(", "));
+        setOlmConfig(normalized).catch(() => {});
         return;
       }
 
       getOlmConfig()
         .then((cfg) => {
           if (!mounted) return;
-          setOlmConfigLocal(cfg);
-          setExcludeInput((cfg.exclude_concepts || []).join(", "));
-          const nextMap = { ...map, [key]: cfg };
+          const normalized = normalizeOlmConfig(cfg);
+          setOlmConfigLocal(normalized);
+          setExcludeInput((normalized.exclude_concepts || []).join(", "));
+          const nextMap = { ...map, [key]: normalized };
           persistDomainConfigMap(nextMap);
         })
         .catch(() => {});
@@ -439,6 +450,23 @@ export default function AppSettingsPanel({
                 }
               />
             </label>
+            <label style={fieldStyle}>
+              Atenuação por distância dos pré-requisitos (delta) (
+              {olmConfig.readiness_distance_delta.toFixed(2)})
+              <input
+                type="range"
+                min={0.1}
+                max={1}
+                step={0.05}
+                value={olmConfig.readiness_distance_delta}
+                onChange={(e) =>
+                  handleOlmChange(
+                    "readiness_distance_delta",
+                    Number(e.target.value),
+                  )
+                }
+              />
+            </label>
           </div>
 
           <div style={rowStyle}>
@@ -469,6 +497,20 @@ export default function AppSettingsPanel({
                   handleOlmChange("meta_strength", Number(e.target.value))
                 }
               />
+            </label>
+            <label style={fieldStyle}>
+              Política de recomendação
+              <select
+                value={olmConfig.ranking_policy}
+                onChange={(e) =>
+                  handleOlmChange("ranking_policy", e.target.value)
+                }
+              >
+                <option value="adaptive">Adaptive (learn/review)</option>
+                <option value="learn_next">Learn Next</option>
+                <option value="review_next">Review Next</option>
+                <option value="balanced">Balanced (legacy)</option>
+              </select>
             </label>
           </div>
 
@@ -526,8 +568,9 @@ export default function AppSettingsPanel({
                 handleOlmChange("uncertainty_formula", e.target.value)
               }
             >
-              <option value="standard">Standard (1/N)</option>
-              <option value="sqrt">Sqrt (1/√N)</option>
+              <option value="standard">
+                Beta variance (alpha*beta / ((alpha+beta)^2*(alpha+beta+1)))
+              </option>
             </select>
           </label>
 

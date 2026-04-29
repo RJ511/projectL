@@ -108,7 +108,7 @@ Também é possível declarar conceitos inline no conteúdo com `;;;conceito;;;`
 2. Marcação inline no conteúdo (`;;;nome do conceito;;;`) e declaração de pré-requisitos (`;;;conceito:prereq;;;`).
 3. Eventos ingeridos (`review`, `practice_attempt`, etc.) e respetivo payload (`correct`, `total`, `confidence`, duração, etc.).
 4. Mapeamento conteúdo→conceito (`content_concepts`) e cobertura (`coverage_weight`).
-5. Config OLM (`meta_strength`, `gamma`, `lambda`, `soft_gate_k`, `decay_*`, etc.).
+5. Config OLM (`meta_strength`, `gamma`, `ranking_lambda`, `confidence_mismatch_lambda`, `readiness_distance_delta`, `ranking_policy`, `soft_gate_k`, `decay_*`, etc.; `lambda` e fallback legado, `readiness_blend_eta` aplica blend real `min+mean`; no runtime atual de decay state-based, a semi-vida ativa é `decay_half_life_days`).
 
 ### O que o concept influencia
 
@@ -136,6 +136,8 @@ Também é possível declarar conceitos inline no conteúdo com `;;;conceito;;;`
 - Mapeamento evento→conceito: `normalize_maps`.
 - Limitadores fortes por evento: `limiter_for_event`.
 - Update principal: `ingest_into_store`.
+- `ingest_into_store` filtra conceitos inexistentes antes de persistir o evento, renormaliza pesos válidos e devolve `IngestResult { updated_concepts, duplicate }`.
+- `olm_add_edge` aplica validação anti-ciclo antes de adicionar `prereq -> target`.
 - Ranking: `rank_next_to_study`.
 
 ## 4.5 Recomendação no Domain Level
@@ -147,9 +149,9 @@ Também é possível declarar conceitos inline no conteúdo com `;;;conceito;;;`
 
 Definidos em `olm.rs`, registados em `src-tauri/src/main.rs`:
 
-- Conceitos/grafo: `olm_upsert_concept`, `olm_list_concepts`, `olm_add_edge`, `olm_list_edges`
+- Conceitos/grafo: `olm_upsert_concept`, `olm_list_concepts`, `olm_add_edge` (self-edge/cycle safe), `olm_list_edges`
 - Conteúdo/mapa: `olm_upsert_content_item`, `olm_map_content_concept`
-- Eventos/estado: `olm_ingest_event`, `olm_get_state`, `olm_get_explain`, `olm_next_to_study`
+- Eventos/estado: `olm_ingest_event` (retorna `updated_concepts` + `duplicate`), `olm_get_state`, `olm_get_explain`, `olm_next_to_study`, `olm_next_content_to_study`
 - Config/persistência: `olm_get_config`, `olm_set_config`, `olm_reset_state`, `olm_export_json`, `olm_import_json`, `olm_save_state`, `olm_load_state`
 - Diagnóstico/métricas: `olm_get_debug_ranking`, `olm_get_content_metrics`
 

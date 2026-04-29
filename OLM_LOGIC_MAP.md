@@ -55,7 +55,7 @@ Isto evita divisões por zero e começa num estado neutro.
 Para cada conceito:
 
 - $m = \dfrac{\alpha}{\alpha + \beta}$
-- $u = \dfrac{1}{\alpha + \beta}$
+- $u = \dfrac{\alpha\beta}{(\alpha + \beta)^2(\alpha + \beta + 1)}$
 
 Interpretação:
 
@@ -85,21 +85,24 @@ Implementado em `event_score`.
 
 ### b) `study_read`
 
-- $s = clamp(\dfrac{duration\_sec}{target\_duration\_sec}, 0, 1) \times 0.5$
+- $progress = clamp(\dfrac{duration\_sec}{target\_duration\_sec}, 0, 1)$
+- $s = 0.5 + 0.10 \cdot progress$
 
-Leitura é explicitamente limitada para ter impacto mais fraco.
+Leitura conta como sinal leve, mas parte de um baseline neutro de `0.5`.
 
 ### c) `review`
 
-- $s = clamp(\dfrac{duration\_sec}{target\_duration\_sec}, 0, 1) \times 0.35$
+- $progress = clamp(\dfrac{duration\_sec}{target\_duration\_sec}, 0, 1)$
+- $s = 0.5 + 0.15 \cdot progress$
 
-`review` é um sinal leve para revisão rápida.
+`review` é um sinal leve-positivo para revisão rápida, também ancorado em baseline neutro.
 
 ### d) `note_taking`
 
-- $$s = clamp(\dfrac{chars\_written}{target\_chars}, 0, 1) \times 0.35$$
+- $progress = clamp(\dfrac{chars\_written}{target\_chars}, 0, 1)$
+- $s = 0.5 + 0.15 \cdot progress$
 
-`note_taking` mede produção de notas com impacto deliberadamente baixo.
+`note_taking` mede produção de notas com impacto moderado, sem penalizar por omissão de evidência objetiva.
 
 ### e) `flashcard_review`
 
@@ -116,20 +119,39 @@ Leitura é explicitamente limitada para ter impacto mais fraco.
 
 Implementado em `confidence_weight`:
 
-- $w_{conf} = 0.5 + 0.5 \cdot confidence$
-- Se não houver confidence -> $w_{conf}=1.0$
+- Com `confidence` e `objective` presentes:
 
-## 4.5 Peso efetivo total
+$$
+w_{conf}=clamp\left(1-\lambda_{conf}\cdot|confidence-objective|,0,1\right)
+$$
+
+- Se faltar `confidence` ou `objective` -> $w_{conf}=1.0$ (fallback conservador)
+
+## 4.5 Peso efetivo total (agrupado)
 
 Para cada conceito afetado:
 
-Nota de leitura: esta secção define o pipeline completo de peso (`w`).
-A secção 12 detalha apenas a componente metacognitiva (`w_meta`) usada aqui.
+Nota de leitura: esta secção define o pipeline completo de peso (`w`) numa decomposição agrupada, mantendo o mesmo resultado final no runtime.
+A secção 12 detalha a parte metacognitiva/reliability usada aqui.
 
-- peso base:
+- força de evidência (`w_evidence`):
 
 $$
-w_{base}=w_{type} \cdot w_{mapping} \cdot w_{conf} \cdot w_{meta}
+w_{evidence}=w_{type}\cdot w_{mapping}
+$$
+
+- confiança/fiabilidade (`r_reliability`):
+
+$$
+r_{reliability}=w_{conf}\cdot w_{meta,trust}
+$$
+
+onde `w_meta,trust` já incorpora fiabilidade metacognitiva (alignment, confiança, histórico, cap por sessão) e shrink para neutro.
+
+- peso bruto antes de safety:
+
+$$
+w_{raw}=w_{evidence}\cdot r_{reliability}
 $$
 
 - limitador de warmup (depende do número de evidências prévias do conceito):
@@ -141,7 +163,11 @@ $$
 - hard cap por tipo de evento:
 
 $$
-w = min\left(w_{base}\cdot w_{warm},\ hard\_cap(event\_type)\right)
+g_{safety}=min\left(w_{warm},\ \frac{hard\_cap(event\_type)}{w_{raw}}\right)
+$$
+
+$$
+w = w_{raw}\cdot g_{safety}
 $$
 
 Aqui, `w` é o peso final aplicado no update.
@@ -151,9 +177,10 @@ Onde:
 - $w_{type}$: peso por tipo de evento
 - $w_{mapping}$: cobertura do conteúdo para esse conceito
 - $w_{conf}$: peso de confiança
-- $w_{meta}$: fator metacognitivo
+- $w_{meta,trust}$: fator metacognitivo já ajustado por fiabilidade
+- $g_{safety}$: agregador de warmup + cap
 
-Definição de $w_{meta}$: ver secção **12.3**.
+Definição de confiança metacognitiva e fiabilidade: ver secções **12.3** e **12.5**.
 
 Caps atuais (`limiter_for_event`):
 
@@ -163,6 +190,8 @@ Caps atuais (`limiter_for_event`):
 - `self_assessment`: 0.18
 - `review` / `study_read` / `note_taking`: 0.10
 - default: 0.15
+
+No score do evento, mantém-se também o shrink conservador para neutro (`safety_shrink_score`) antes do update em `delta_alpha/delta_beta`.
 
 ## 4.6 Regra de update do estado
 
@@ -190,7 +219,16 @@ A função `normalize_maps` usa esta ordem:
 2. Senão, se existir `content_id` -> resolve por `content_concepts`.
 3. Sem nenhuma das duas opções -> erro de ingestão.
 
-Isto garante que todo evento aplicado é atribuível a conceito(s).
+Depois dessa resolução inicial, a ingestão filtra apenas conceitos que existem em `store.concepts` e renormaliza os pesos resultantes.
+
+Regras adicionais do runtime atual:
+
+1. Se o evento não resolver para nenhum conceito mapeado -> erro de ingestão.
+2. Se resolver apenas para conceitos inexistentes -> erro de ingestão (`Event does not map to any existing concept`).
+3. Só depois desta validação o evento é persistido em `study_events`.
+4. Se `event_id` já existir, a ingestão é no-op e devolve `duplicate = true` sem voltar a aplicar evidência.
+
+Isto evita sucesso silencioso com `updated_concepts = []` quando o mapeamento final é inválido.
 
 Nota de robustez (v2):
 
@@ -217,44 +255,98 @@ Nota operacional:
 
 Para cada conceito alvo `c`:
 
-- Se não tem pré-requisitos: $R(c)=1$
-- Se tem pré-requisitos $p$: usa o pior caso
+- Se não tem ancestrais (pré-requisitos diretos ou indiretos): $R(c)=1$
+- Se tem ancestrais `a` no grafo:
 
 $$
-R(c)=\min_{p \in prereqs(c)}\big(clamp(m_p-\gamma u_p,0,1)\big)
+r_a=clamp(m_a-\gamma u_a,0,1)
+$$
+
+$$
+R_{min}(c)=\min_{a\in Ancestors(c)}\left(\delta^{d(a,c)}\cdot r_a\right)
+$$
+
+$$
+R_{mean}(c)=\frac{1}{|Ancestors(c)|}\sum_{a\in Ancestors(c)}\left(\delta^{d(a,c)}\cdot r_a\right)
+$$
+
+$$
+R(c)=\eta\cdot R_{min}(c)+(1-\eta)\cdot R_{mean}(c)
 $$
 
 Com `gamma` (simulações atuais: `0.35`) para reduzir o efeito de incerteza excessivamente agressivo.
+`d(a,c)` é a distância no grafo e `delta in (0,1]` atenua o impacto de ancestrais mais distantes.
+`eta` é `readiness_blend_eta` (clamped em `[0,1]`). `eta=1` recupera o comportamento estrito por mínimo; `eta=0` usa média pura.
 
 ## 6.2 Filtro de prontidão
 
 - Existe um corte mínimo patológico: $R(c) < R_{min}$ (simulações: `0.1`) é excluído.
-- O limiar `theta` passa a funcionar como referência de “hard ready” para diagnóstico.
+- O limiar `theta` continua como referência de “hard ready” para diagnóstico.
 - A ordenação pode incluir conceitos abaixo de `theta` via soft-gating.
 
 ## 6.3 Score final
 
-Com `lambda` default 0.7:
+O runtime separa duas intenções pedagógicas:
 
 $$
-Score(c)=R(c)^k\cdot\Big(\lambda(1-m_c)+(1-\lambda)u_c\Big)
+Score_{learn}(c)=R(c)^k\cdot(1-m_c)
 $$
 
-Quando não há soft-gating (`k` ausente), o comportamento volta ao hard-gate clássico.
+$$
+Score_{review}(c)=u_c+decay_c+inconsistency_c
+$$
 
-Intuição:
+Onde:
 
-- privilegia lacuna de domínio (`1 - mastery`)
-- também considera incerteza (`u`)
-- penaliza conceitos não prontos via `readiness`
+- `decay_c`: perda de mastery entre estado bruto e estado efetivo após decay temporal
+- `inconsistency_c`: variabilidade recente dos scores de evidência no conceito
 
-## 6.4 Why (explicação da recomendação)
+Políticas disponíveis (`ranking_policy`):
 
-Cada item recomendado inclui 3 linhas automáticas:
+- `learn_next`: usa `Score_learn`
+- `review_next`: usa `Score_review`
+- `adaptive` (default): usa `learn` quando `mastery < theta`, senão `review`
+- `balanced`: mantém score clássico para compatibilidade
 
-1. Mastery baixo/moderado.
-2. Readiness dos pré-requisitos.
-3. Estado da incerteza (alta vs controlada).
+$$
+Score_{balanced}(c)=R(c)^k\cdot\Big(\lambda(1-m_c)+(1-\lambda)u_c\Big)
+$$
+
+No runtime atual, `balanced` também aplica penalização de conceito raiz (`root_penalty`) como no comportamento histórico.
+
+## 6.4 Score Decomposition e Why (explicabilidade)
+
+Cada item recomendado inclui um campo `score_decomposition` com os fatores individuais:
+
+```text
+Score = gate_factor × gap × (policy blend) × root_multiplier
+      onde gate_factor = readiness^k
+```
+
+Campos expostos em `ScoreDecomposition`:
+
+| Campo             | Descrição                                                           |
+| ----------------- | ------------------------------------------------------------------- |
+| `readiness`       | R\*(c) multi-hop com atenuação por distância                        |
+| `gap`             | 1 − mastery (lacuna conceptual)                                     |
+| `uncertainty`     | Variância Beta posterior                                            |
+| `decay_signal`    | Redução de mastery causada por evidência antiga                     |
+| `inconsistency`   | Variabilidade dos scores recentes (stddev×2 sobre últimas 8)        |
+| `gate_factor`     | readiness^k (soft gate)                                             |
+| `root_multiplier` | 1 − root_penalty para conceitos sem pré-requisitos                  |
+| `policy_used`     | Política ativa: `learn_next`, `review_next`, `adaptive`, `balanced` |
+| `weakest_prereqs` | Top-3 pré-requisitos mais fracos: [(nome, r_efetiva)]               |
+
+As mensagens `why` são geradas a partir desta decomposição:
+
+1. **Prereq readiness com nomes**: `"Pronto: pré-req 'Álgebra' (r=0.82); outros: 'Cálculo' (r=0.79) — readiness=0.79 ≥ limiar"` ou `"Bloqueado: pré-req 'Fundamentos' com readiness insuficiente (r=0.21)"`
+2. **Lacuna conceptual**: `"Recomendado: lacuna conceptual alta (mastery=0.32, gap=0.68)"`
+3. **Política ativa**: `"Política 'adaptive': learn=0.412, review=0.183"`
+4. **Incerteza residual**: `"Prioridade aumentada por incerteza residual (u=0.041)"`
+5. **Penalização por decay**: `"Penalização por decay: mastery efetiva reduzida em 0.12 (evidência antiga)"`
+6. **Inconsistência**: `"Variabilidade de scores recentes: 0.48 — inconsistência detetada"`
+7. **Soft gate**: `"Abaixo do limiar (0.50): mantido por soft-gating (k=1.60)"`
+8. **Penalização de raiz**: `"Penalização de raiz aplicada: conceito sem pré-requisitos (×0.88)"`
 
 No ranking unificado por item (`olm_next_content_to_study`), cada item também expõe:
 
@@ -312,8 +404,13 @@ A segmentação por domínio pode ser reforçada com:
 - Existe limite de 200 evidências por conceito para controlar crescimento.
 - `stop_mastery` e `exclude_concepts` permitem mitigar root-bias e excluir conceitos ruidosos.
 - `domain_filter` em `next_to_study` permite recomendações por domínio (prefixo de concept_id).
-- Uncertainty formula configurável: `standard` (1/N) ou `sqrt` (1/√N).
-- Decay temporal é aplicado ao estado efetivo (`alpha`/`beta`) usando semi-vida (`decay_half_life_days`) quando ativado.
+- Uncertainty usa a variância da Beta posterior: `alpha*beta / ((alpha+beta)^2*(alpha+beta+1))`.
+- Decay temporal (modelo atual): `concept_state.alpha` e `concept_state.beta` representam o estado efetivo no instante `last_update`.
+- Regra operacional:
+  1. antes de ler/usar o conceito (ranking, state view), aplica-se decay de `last_update -> now`;
+  2. antes de atualizar por evento, aplica-se decay de `last_update -> now`, depois soma-se `delta_alpha/delta_beta`;
+  3. após update, guarda-se `last_update = now`.
+- A semi-vida ativa no runtime deste modelo é `decay_half_life_days`.
 
 ## 11) Endpoints/comandos do OLM (Tauri)
 
@@ -321,11 +418,11 @@ A segmentação por domínio pode ser reforçada com:
 
 - `olm_upsert_concept`
 - `olm_list_concepts`
-- `olm_add_edge`
+- `olm_add_edge` - rejeita self-edge, conceitos inexistentes e ciclos (`prereq -> target` quando `target` já é ancestral de `prereq`)
 - `olm_list_edges`
 - `olm_upsert_content_item`
 - `olm_map_content_concept`
-- `olm_ingest_event`
+- `olm_ingest_event` - devolve `IngestResult { updated_concepts, duplicate }`; rejeita eventos sem conceitos válidos e não reaplica eventos duplicados
 - `olm_get_state`
 - `olm_get_explain`
 - `olm_next_to_study` (agora com `domain_filter` e `exclude` opcionais)
@@ -454,7 +551,7 @@ $$
 
 Ou seja, `meta_raw` é o score metacognitivo composto (pré-intensidade), e `meta_strength` controla quanto esse score influencia `w_meta`.
 
-No update real atual (`olm_ingest_event`), o backend usa `meta_strength = 0.6` (balanced) como constante.
+No update real atual (`olm_ingest_event`), o backend usa o valor persistido em `config.meta_strength`.
 
 ### 12.5 Mitigação de viés metacognitivo
 
@@ -592,20 +689,22 @@ Estes ficheiros servem de base para recomendar default de `meta_strength` em amb
 
 ## 15) Config OLM (parâmetros persistidos)
 
-| Campo                  | Default      | Descrição                                                                                    |
-| ---------------------- | ------------ | -------------------------------------------------------------------------------------------- |
-| `lambda`               | 0.70         | Peso de mastery vs uncertainty no score                                                      |
-| `gamma`                | 0.35         | Intensidade de penalização por incerteza na readiness                                        |
-| `theta`                | 0.50         | Limiar de readiness para hard-gate                                                           |
-| `min_readiness`        | 0.10         | Readiness mínima para aparecer no ranking                                                    |
-| `soft_gate_k`          | 1.60         | Expoente do soft-gating (maior = mais restritivo)                                            |
-| `meta_strength`        | 0.60         | Parâmetro persistido de metacognição (atualmente não aplicado no `olm_ingest_event` runtime) |
-| `root_penalty`         | 0.12         | Penalização de score para conceitos raiz (sem prereqs)                                       |
-| `stop_mastery`         | 0.85         | Mastery acima do qual conceitos raiz são excluídos do ranking                                |
-| `exclude_concepts`     | `[]`         | Lista de concept_ids excluídos do `next_to_study`                                            |
-| `uncertainty_formula`  | `"standard"` | `"standard"` (1/N) ou `"sqrt"` (1/√N)                                                        |
-| `decay_enabled`        | `false`      | Ativar decay temporal no cálculo de estado efetivo                                           |
-| `decay_half_life_days` | 30           | Semi-vida do decay em dias                                                                   |
+- `lambda` (default `0.70`): campo legado partilhado, usado como fallback quando lambdas específicos não são definidos.
+- `ranking_lambda` (default `null`): lambda do score `balanced` (se ausente, usa `lambda`).
+- `confidence_mismatch_lambda` (default `null`): lambda do `w_conf` em `confidence_weight` (se ausente, usa `lambda`).
+- `gamma` (default `0.35`): intensidade de penalização por incerteza na readiness.
+- `readiness_blend_eta` (default `0.70`): blend da readiness (`eta*min + (1-eta)*mean`).
+- `readiness_distance_delta` (default `0.85`): atenuação por distância no readiness multi-hop (`delta^d`).
+- `ranking_policy` (default `"adaptive"`): política de ranking (`learn_next`, `review_next`, `adaptive`, `balanced`).
+- `theta` (default `0.50`): limiar para o switch do modo `adaptive` e referência de hard-ready.
+- `min_readiness` (default `0.10`): readiness mínima para aparecer no ranking.
+- `soft_gate_k` (default `1.60`): expoente do soft-gating no score de `learn`/`balanced`.
+- `meta_strength` (default `0.60`): parâmetro persistido de metacognição aplicado no runtime de `olm_ingest_event`.
+- `root_penalty` (default `0.12`): penalização para conceitos raiz no score `learn`/`balanced`.
+- `stop_mastery` (default `0.85`): mastery acima do qual conceitos raiz são excluídos do ranking.
+- `exclude_concepts` (default `[]`): lista de concept_ids excluídos do `next_to_study`.
+- `decay_enabled` (default `false`): ativa decay temporal no cálculo de estado efetivo.
+- `decay_half_life_days` (default `30`): semi-vida base em dias para o decay state-based.
 
 ### Como interpretar stop_mastery
 
@@ -632,7 +731,8 @@ Na política atual da app, o frontend passa path explícito para gravar/carregar
 - `candidates`: todos os candidatos rankeados com campos adicionais:
   - `gate_factor`: fator do soft-gating (1.0 se ready, < 1.0 se não)
   - `event_count`: número de evidências já registadas para o conceito
-  - `why`: lista de razões textuais para o score
+  - `why`: lista de razões textuais para o score (enriquecida com nomes de pré-requisitos, decomposição de gap/decay/inconsistência)
+- `score_decomposition`: objeto com os fatores individuais do score (`readiness`, `gap`, `uncertainty`, `decay_signal`, `inconsistency`, `gate_factor`, `root_multiplier`, `policy_used`, `weakest_prereqs`)
 - `diagnostics`: `candidates_before_gate`, `candidates_after_gate`, `candidates_ranked`, `candidates_excluded_min_readiness`, `readiness_distribution`, `concept_event_counts`, `top_candidates`
 
 Visível no OLM Panel → "Debug Ranking" no frontend.

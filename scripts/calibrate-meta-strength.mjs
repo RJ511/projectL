@@ -90,7 +90,7 @@ function buildMarkdown(summary) {
     `- Recommended meta_strength: \`${summary.recommendation.meta_strength}\``,
   );
   lines.push(
-    `- Selection rationale: highest composite score (test pass, test MRR, hit@3).`,
+    `- Selection rationale: highest training pass rate, then highest training MRR, then highest hit@3.`,
   );
   lines.push("");
   lines.push("## Aggregated Metrics");
@@ -199,14 +199,14 @@ function main() {
   });
 
   approaches.sort((a, b) => {
-    if (b.composite_score !== a.composite_score)
-      return b.composite_score - a.composite_score;
     if (b.calibration_selected_count !== a.calibration_selected_count) {
       return b.calibration_selected_count - a.calibration_selected_count;
     }
     if (b.avg_test_pass_rate !== a.avg_test_pass_rate)
       return b.avg_test_pass_rate - a.avg_test_pass_rate;
-    return b.avg_test_mrr - a.avg_test_mrr;
+    if (b.avg_test_mrr !== a.avg_test_mrr)
+      return b.avg_test_mrr - a.avg_test_mrr;
+    return b.composite_score - a.composite_score;
   });
 
   if (!approaches.length) {

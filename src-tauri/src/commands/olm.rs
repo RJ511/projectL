@@ -7,16 +7,40 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::cmp::Ordering;
 use std::collections::{HashMap, HashSet};
+use std::collections::VecDeque;
 use std::hash::{DefaultHasher, Hash, Hasher};
 use std::sync::Mutex;
 use tauri::State;
 
 const DEFAULT_META_STRENGTH: f64 = 0.6;
 
+fn default_readiness_blend_eta() -> f64 {
+    0.7
+}
+
+fn default_readiness_distance_delta() -> f64 {
+    0.85
+}
+
+fn default_ranking_policy() -> String {
+    "adaptive".to_string()
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OlmConfig {
+    // Legacy shared lambda kept for backward compatibility with persisted snapshots.
     pub lambda: f64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ranking_lambda: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub confidence_mismatch_lambda: Option<f64>,
     pub gamma: f64,
+    #[serde(default = "default_readiness_blend_eta")]
+    pub readiness_blend_eta: f64,
+    #[serde(default = "default_readiness_distance_delta")]
+    pub readiness_distance_delta: f64,
+    #[serde(default = "default_ranking_policy")]
+    pub ranking_policy: String,
     pub theta: f64,
     pub min_readiness: f64,
     pub soft_gate_k: f64,
@@ -24,7 +48,6 @@ pub struct OlmConfig {
     pub root_penalty: f64,
     pub stop_mastery: f64,
     pub exclude_concepts: Vec<String>,
-    pub uncertainty_formula: String,
     pub decay_enabled: bool,
     pub decay_half_life_days: f64,
 }
@@ -33,7 +56,12 @@ impl Default for OlmConfig {
     fn default() -> Self {
         OlmConfig {
             lambda: 0.7,
+            ranking_lambda: None,
+            confidence_mismatch_lambda: None,
             gamma: 0.35,
+            readiness_blend_eta: default_readiness_blend_eta(),
+            readiness_distance_delta: default_readiness_distance_delta(),
+            ranking_policy: default_ranking_policy(),
             theta: 0.5,
             min_readiness: 0.1,
             soft_gate_k: 1.6,
@@ -41,10 +69,19 @@ impl Default for OlmConfig {
             root_penalty: 0.12,
             stop_mastery: 0.85,
             exclude_concepts: vec![],
-            uncertainty_formula: "standard".to_string(),
             decay_enabled: false,
             decay_half_life_days: 30.0,
         }
+    }
+}
+
+impl OlmConfig {
+    fn ranking_lambda_resolved(&self) -> f64 {
+        clamp_01(self.ranking_lambda.unwrap_or(self.lambda))
+    }
+
+    fn confidence_mismatch_lambda_resolved(&self) -> f64 {
+        clamp_01(self.confidence_mismatch_lambda.unwrap_or(self.lambda))
     }
 }
 
@@ -136,6 +173,20 @@ pub struct ConceptStateView {
 }
 
 #[derive(Debug, Clone, Serialize)]
+pub struct ScoreDecomposition {
+    pub readiness: f64,
+    pub gap: f64,
+    pub uncertainty: f64,
+    pub decay_signal: f64,
+    pub inconsistency: f64,
+    pub gate_factor: f64,
+    pub root_multiplier: f64,
+    pub policy_used: String,
+    /// Top-3 weakest prereqs: (concept_name, effective_readiness)
+    pub weakest_prereqs: Vec<(String, f64)>,
+}
+
+#[derive(Debug, Clone, Serialize)]
 pub struct NextToStudyItem {
     pub concept_id: String,
     pub name: String,
@@ -146,11 +197,13 @@ pub struct NextToStudyItem {
     pub gate_factor: f64,
     pub event_count: usize,
     pub why: Vec<String>,
+    pub score_decomposition: ScoreDecomposition,
 }
 
 #[derive(Debug, Clone, Serialize)]
 pub struct IngestResult {
     pub updated_concepts: Vec<String>,
+    pub duplicate:bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -194,6 +247,8 @@ struct ApproachConfig {
     readiness_threshold: f64,
     min_readiness: f64,
     readiness_gamma: f64,
+    readiness_distance_delta: f64,
+    ranking_policy: &'static str,
     root_penalty: f64,
     meta_strength: f64,
     soft_gate_k: Option<f64>,
@@ -425,21 +480,11 @@ fn mastery(state: &ConceptState) -> f64 {
 fn uncertainty(state: &ConceptState) -> f64 {
     let total = state.alpha + state.beta;
     if total <= 0.0 {
-        1.0
-    } else {
-        1.0 / total
-    }
-}
-
-fn uncertainty_with_formula(state: &ConceptState, formula: &str) -> f64 {
-    let total = state.alpha + state.beta;
-    if total <= 0.0 {
         return 1.0;
     }
-    match formula {
-        "sqrt" => 1.0 / total.sqrt(),
-        _ => 1.0 / total,
-    }
+
+    let variance = (state.alpha * state.beta) / ((total * total) * (total + 1.0));
+    clamp_01(variance / (1.0 / 12.0))
 }
 
 fn decay_state_if_needed(state: &ConceptState, config: &OlmConfig) -> ConceptState {
@@ -513,30 +558,33 @@ fn event_score(event: &StudyEvent) -> f64 {
             let duration = parse_payload_float(&event.payload, "duration_sec").unwrap_or(0.0);
             let target =
                 parse_payload_float(&event.payload, "target_duration_sec").unwrap_or(600.0);
-            if target <= 0.0 {
+            let progress = if target <= 0.0 {
                 0.0
             } else {
-                clamp_01(duration / target) * 0.5
-            }
+                clamp_01(duration / target)
+            };
+            0.5 + (0.10 * progress)
         }
         "review" => {
             let duration = parse_payload_float(&event.payload, "duration_sec").unwrap_or(0.0);
             let target =
                 parse_payload_float(&event.payload, "target_duration_sec").unwrap_or(600.0);
-            if target <= 0.0 {
+            let progress = if target <= 0.0 {
                 0.0
             } else {
-                clamp_01(duration / target) * 0.35
-            }
+                clamp_01(duration / target)
+            };
+            0.5 + (0.15 * progress)
         }
         "note_taking" => {
             let chars_written = parse_payload_float(&event.payload, "chars_written").unwrap_or(0.0);
             let target_chars = parse_payload_float(&event.payload, "target_chars").unwrap_or(300.0);
-            if target_chars <= 0.0 {
+            let progress = if target_chars <= 0.0 {
                 0.0
             } else {
-                clamp_01(chars_written / target_chars) * 0.35
-            }
+                clamp_01(chars_written / target_chars)
+            };
+            0.5 + (0.15 * progress)
         }
         "flashcard_review" => {
             if let Some(rating) = event.payload.get("rating").and_then(|v| v.as_str()) {
@@ -597,11 +645,16 @@ fn objective_score(event: &StudyEvent) -> Option<f64> {
     }
 }
 
-fn confidence_weight(event: &StudyEvent) -> f64 {
-    parse_payload_float(&event.payload, "confidence")
-        .map(clamp_01)
-        .map(|c| 0.5 + (0.5 * c))
-        .unwrap_or(1.0)
+fn confidence_weight(event: &StudyEvent, objective: Option<f64>, lambda: f64) -> f64 {
+    let Some(confidence) = parse_payload_float(&event.payload, "confidence").map(clamp_01) else {
+        return 1.0;
+    };
+
+    let Some(objective_score) = objective else {
+        return 1.0;
+    };
+
+    clamp_01(1.0 - (clamp_01(lambda) * (confidence - objective_score).abs()))
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -745,6 +798,22 @@ fn metacognitive_signal(
     }
 }
 
+fn safety_gate_weight(raw_weight: f64, warmup_factor: f64, hard_cap: f64) -> f64 {
+    if raw_weight <= 0.0 {
+        return 0.0;
+    }
+
+    // Equivalent to: min(raw_weight * warmup_factor, hard_cap)
+    // expressed as a multiplicative safety gate.
+    let cap_factor = hard_cap / raw_weight;
+    warmup_factor.min(cap_factor).clamp(0.0, 1.0)
+}
+
+fn safety_shrink_score(effective_score: f64) -> f64 {
+    // Keep conservative pull towards neutral to reduce overreaction to noisy events.
+    0.5 + ((effective_score - 0.5) * 0.6)
+}
+
 fn normalize_maps(store: &OlmStore, event: &StudyEvent) -> Vec<(String, f64)> {
     if !event.concept_ids.is_empty() {
         let raw: Vec<(String, f64)> = event
@@ -772,21 +841,48 @@ fn ingest_into_store(
     store: &mut OlmStore,
     event: &StudyEvent,
     meta_strength: f64,
-) -> Result<Vec<String>, String> {
+) -> Result<IngestResult, String> {
+
     if event.event_id.trim().is_empty() {
         return Err("event_id is required".to_string());
+    }
+
+    if store.study_events.iter().any(|e| e.event_id == event.event_id) {
+        return Ok(IngestResult {
+            updated_concepts: Vec::new(),
+            duplicate: true,
+        });
     }
 
     let score = event_score(event);
     let objective = objective_score(event);
     let base_weight = event_type_weight(&event.event_type);
-    let confidence = confidence_weight(event);
-
+    let confidence = confidence_weight(
+        event,
+        objective,
+        store.config.confidence_mismatch_lambda_resolved(),
+    );
     let mapped_concepts = normalize_maps(store, event);
+
     if mapped_concepts.is_empty() {
         return Err(
             "Event must include concept_ids or a content_id mapped to concepts".to_string(),
         );
+    }
+
+    let valid_mapped_concepts: Vec<(String, f64)> = mapped_concepts
+    .into_iter()
+    .filter(|(concept_id, _)| store.concepts.contains_key(concept_id))
+    .collect();
+
+    if valid_mapped_concepts.is_empty() {
+        return Err("Event does not map to any existing concept".to_string());
+    }
+
+    let valid_mapped_concepts = normalized_weights(&valid_mapped_concepts);
+
+    if valid_mapped_concepts.is_empty() {
+        return Err("Event does not map to any existing concept".to_string());
     }
 
     store.study_events.push(event.clone());
@@ -796,16 +892,15 @@ fn ingest_into_store(
     }
 
     let mut updated = HashSet::new();
+    let decay_config = store.config.clone();
+    let update_now = Utc::now().to_rfc3339();
 
-    for (concept_id, mapping_weight) in mapped_concepts {
-        if !store.concepts.contains_key(&concept_id) {
-            continue;
-        }
+    for (concept_id, mapping_weight) in valid_mapped_concepts {
 
         let prior_entries = store.evidence.get(&concept_id).cloned().unwrap_or_default();
         let prior_evidence_count = prior_entries.len();
         let prior_self_assessment_same_day =
-            count_self_assessment_same_day(&prior_entries, &event.timestamp);
+            count_self_assessment_same_day(&prior_entries, &update_now);
 
         let meta = metacognitive_signal(
             event,
@@ -818,20 +913,30 @@ fn ingest_into_store(
 
         let (warmup_factor, hard_cap) = limiter_for_event(&event.event_type, prior_evidence_count);
 
-        let mut applied_weight = base_weight * mapping_weight * confidence * meta.effective_weight;
-        applied_weight *= warmup_factor;
-        applied_weight = applied_weight.min(hard_cap);
+        // Grouped decomposition (same final result as before):
+        // w_evidence: intrinsic event strength + concept mapping strength
+        // r_reliability: trust/reliability layer (confidence + metacognitive trust)
+        // g_safety: warmup and hard-cap safety controls
+        let w_evidence = base_weight * mapping_weight;
+        let r_reliability = confidence * meta.effective_weight;
+        let raw_weight = w_evidence * r_reliability;
+        let g_safety = safety_gate_weight(raw_weight, warmup_factor, hard_cap);
+        let applied_weight = raw_weight * g_safety;
 
-        let conservative_score = 0.5 + ((meta.effective_score - 0.5) * 0.6);
+        let conservative_score = safety_shrink_score(meta.effective_score);
         let bounded_score = clamp_01(conservative_score);
 
         let delta_alpha = applied_weight * bounded_score;
         let delta_beta = applied_weight * (1.0 - bounded_score);
 
         let concept_state = ensure_state(store, &concept_id);
+        // State-based decay: normalize stored state to "now" before applying deltas.
+        let decayed_state = decay_state_if_needed(concept_state, &decay_config);
+        concept_state.alpha = decayed_state.alpha;
+        concept_state.beta = decayed_state.beta;
         concept_state.alpha += delta_alpha;
         concept_state.beta += delta_beta;
-        concept_state.last_update = Some(event.timestamp.clone());
+        concept_state.last_update = Some(update_now.clone());
 
         let entry = store.evidence.entry(concept_id.clone()).or_default();
         entry.push(EvidenceChunk {
@@ -843,7 +948,7 @@ fn ingest_into_store(
             applied_weight,
             metacognitive_weight: meta.effective_weight,
             metacognitive_alignment: meta.alignment,
-            created_at: event.timestamp.clone(),
+            created_at: update_now.clone(),
         });
 
         if entry.len() > 200 {
@@ -854,7 +959,10 @@ fn ingest_into_store(
         updated.insert(concept_id);
     }
 
-    Ok(updated.into_iter().collect())
+    Ok(IngestResult {
+        updated_concepts: updated.into_iter().collect(),
+        duplicate: false,
+    })
 }
 
 fn next_to_study_from_store(
@@ -873,12 +981,13 @@ fn next_to_study_from_store(
         readiness_threshold,
         config.min_readiness,
         config.gamma,
+        config.readiness_distance_delta,
+        &config.ranking_policy,
         Some(config.soft_gate_k),
         config.root_penalty,
         config.stop_mastery,
         exclude_set,
         domain_filter,
-        &config.uncertainty_formula,
     );
     ranked
 }
@@ -1066,6 +1175,82 @@ fn prereq_readiness(prereq_mastery: f64, prereq_uncertainty: f64, gamma: f64) ->
     clamp_01(prereq_mastery - (clamp_01(gamma) * prereq_uncertainty))
 }
 
+fn ancestor_distances(
+    concept_id: &str,
+    prereq_graph: &HashMap<String, Vec<String>>,
+) -> HashMap<String, usize> {
+    let mut distances: HashMap<String, usize> = HashMap::new();
+    let mut queue: VecDeque<(String, usize)> = VecDeque::new();
+
+    if let Some(parents) = prereq_graph.get(concept_id) {
+        for prereq_id in parents {
+            queue.push_back((prereq_id.clone(), 1));
+        }
+    }
+
+    while let Some((current, distance)) = queue.pop_front() {
+        if let Some(previous_best) = distances.get(&current) {
+            if distance >= *previous_best {
+                continue;
+            }
+        }
+
+        distances.insert(current.clone(), distance);
+
+        if let Some(next_parents) = prereq_graph.get(&current) {
+            for parent in next_parents {
+                queue.push_back((parent.clone(), distance + 1));
+            }
+        }
+    }
+
+    distances
+}
+
+fn concept_decay_signal(raw_mastery: f64, effective_mastery: f64) -> f64 {
+    clamp_01((raw_mastery - effective_mastery).max(0.0))
+}
+
+fn concept_inconsistency_signal(evidence: Option<&Vec<EvidenceChunk>>) -> f64 {
+    let Some(chunks) = evidence else {
+        return 0.0;
+    };
+
+    if chunks.len() < 2 {
+        return 0.0;
+    }
+
+    let recent: Vec<f64> = chunks
+        .iter()
+        .rev()
+        .take(8)
+        .map(|chunk| clamp_01(chunk.score))
+        .collect();
+
+    if recent.len() < 2 {
+        return 0.0;
+    }
+
+    let mean = recent.iter().sum::<f64>() / (recent.len() as f64);
+    let variance = recent
+        .iter()
+        .map(|value| {
+            let delta = value - mean;
+            delta * delta
+        })
+        .sum::<f64>()
+        / (recent.len() as f64);
+
+    clamp_01(variance.sqrt() * 2.0)
+}
+
+fn ranking_policy_normalized(policy: &str) -> &str {
+    match policy {
+        "learn_next" | "review_next" | "balanced" => policy,
+        _ => "adaptive",
+    }
+}
+
 fn rank_next_to_study(
     store: &OlmStore,
     top: Option<usize>,
@@ -1073,21 +1258,25 @@ fn rank_next_to_study(
     readiness_threshold: f64,
     min_readiness: f64,
     readiness_gamma: f64,
+    readiness_distance_delta: f64,
+    ranking_policy: &str,
     soft_gate_k: Option<f64>,
     root_penalty: f64,
     stop_mastery: f64,
     exclude_set: &HashSet<String>,
     domain_filter: Option<&str>,
-    uncertainty_formula: &str,
 ) -> (Vec<NextToStudyItem>, ScenarioDiagnostics) {
     let lam = clamp_01(lambda);
     let threshold = clamp_01(readiness_threshold);
     let min_ready = clamp_01(min_readiness);
     let gamma = clamp_01(readiness_gamma);
+    let delta = clamp_01(readiness_distance_delta).max(0.01);
+    let policy = ranking_policy_normalized(ranking_policy);
     let soft_k = soft_gate_k.unwrap_or(1.6).max(0.1);
     let root_score_penalty = clamp_01(root_penalty);
 
     let mut state_by_id: HashMap<String, (f64, f64)> = HashMap::new();
+    let mut raw_mastery_by_id: HashMap<String, f64> = HashMap::new();
     for concept in store.concepts.values() {
         let raw_state = store
             .concept_state
@@ -1098,14 +1287,20 @@ fn rank_next_to_study(
                 beta: 1.0,
                 last_update: None,
             });
+        raw_mastery_by_id.insert(concept.id.clone(), mastery(&raw_state));
         let concept_state = decay_state_if_needed(&raw_state, &store.config);
         state_by_id.insert(
             concept.id.clone(),
-            (
-                mastery(&concept_state),
-                uncertainty_with_formula(&concept_state, uncertainty_formula),
-            ),
+            (mastery(&concept_state), uncertainty(&concept_state)),
         );
+    }
+
+    let mut prereq_graph: HashMap<String, Vec<String>> = HashMap::new();
+    for edge in &store.edges {
+        prereq_graph
+            .entry(edge.target_id.clone())
+            .or_default()
+            .push(edge.prereq_id.clone());
     }
 
     let mut ranked = Vec::new();
@@ -1133,31 +1328,53 @@ fn rank_next_to_study(
         let (concept_mastery, concept_uncertainty) =
             state_by_id.get(&concept.id).copied().unwrap_or((0.5, 1.0));
 
-        let prereqs: Vec<&ConceptEdge> = store
-            .edges
-            .iter()
-            .filter(|edge| edge.target_id == concept.id)
-            .collect();
+        let direct_prereqs = prereq_graph
+            .get(&concept.id)
+            .map(|parents| parents.len())
+            .unwrap_or(0);
 
         // Stop rule: root concepts with mastery above stop_mastery are removed
-        if prereqs.is_empty() && concept_mastery > stop_mastery {
+        if direct_prereqs == 0 && concept_mastery > stop_mastery {
             continue;
         }
 
-        let readiness = if prereqs.is_empty() {
+        let ancestor_dist = ancestor_distances(&concept.id, &prereq_graph);
+
+        let mut prereq_details: Vec<(String, f64)> = ancestor_dist
+            .iter()
+            .map(|(ancestor_id, distance)| {
+                let (m, u) = state_by_id
+                    .get(ancestor_id)
+                    .copied()
+                    .unwrap_or((0.5, 1.0));
+                let rp = prereq_readiness(m, u, gamma);
+                let attenuation = delta.powi(*distance as i32);
+                let effective_r = clamp_01(attenuation * rp);
+                let name = store
+                    .concepts
+                    .get(ancestor_id)
+                    .map(|c| c.name.clone())
+                    .unwrap_or_else(|| ancestor_id.clone());
+                (name, effective_r)
+            })
+            .collect();
+
+        let readiness = if prereq_details.is_empty() {
             1.0
         } else {
-            prereqs
+            let eta = clamp_01(store.config.readiness_blend_eta);
+            let readiness_min = prereq_details
                 .iter()
-                .map(|edge| {
-                    let (m, u) = state_by_id
-                        .get(&edge.prereq_id)
-                        .copied()
-                        .unwrap_or((0.5, 1.0));
-                    prereq_readiness(m, u, gamma)
-                })
-                .fold(1.0, f64::min)
+                .map(|(_, r)| *r)
+                .fold(1.0, f64::min);
+            let readiness_mean =
+                prereq_details.iter().map(|(_, r)| *r).sum::<f64>() / (prereq_details.len() as f64);
+            clamp_01((eta * readiness_min) + ((1.0 - eta) * readiness_mean))
         };
+
+        // Keep the 3 weakest prereqs for explanation
+        prereq_details.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(Ordering::Equal));
+        prereq_details.truncate(3);
 
         readiness_distribution.push(readiness);
 
@@ -1171,58 +1388,160 @@ fn rank_next_to_study(
             candidates_after_gate += 1;
         }
 
-        let gate_factor = if readiness >= threshold {
-            1.0
-        } else {
-            (readiness / threshold.max(0.01)).powf(soft_k)
-        };
+        let gate_factor = readiness.powf(soft_k);
 
         if gate_factor <= 0.0 {
             continue;
         }
 
-        let base_priority = (lam * (1.0 - concept_mastery)) + ((1.0 - lam) * concept_uncertainty);
-        let root_multiplier = if prereqs.is_empty() {
+        let root_multiplier = if direct_prereqs == 0 {
             1.0 - root_score_penalty
         } else {
             1.0
         };
-        let slight_readiness_factor = 0.9 + (0.1 * readiness);
-        let score = base_priority * gate_factor * slight_readiness_factor * root_multiplier;
+
+        let learn_score = gate_factor * (1.0 - concept_mastery) * root_multiplier;
+
+        let raw_mastery = raw_mastery_by_id
+            .get(&concept.id)
+            .copied()
+            .unwrap_or(concept_mastery);
+        let decay_signal = concept_decay_signal(raw_mastery, concept_mastery);
+        let inconsistency_signal = concept_inconsistency_signal(store.evidence.get(&concept.id));
+        let review_signal = clamp_01(
+    (0.60 * concept_uncertainty)
+        + (0.25 * decay_signal)
+        + (0.15 * inconsistency_signal)
+);
+
+let review_score = gate_factor * review_signal * root_multiplier;
+
+        let balanced_score =
+            gate_factor
+                * ((lam * (1.0 - concept_mastery)) + ((1.0 - lam) * concept_uncertainty))
+                * root_multiplier;
 
         let event_count = store
-            .evidence
-            .get(&concept.id)
-            .map(|e| e.len())
-            .unwrap_or(0);
+                    .evidence
+                    .get(&concept.id)
+                    .map(|e| e.len())
+                    .unwrap_or(0);
 
-        let mut why = vec![
-            format!("Mastery baixo/moderado ({:.2})", concept_mastery),
-            format!("Readiness pelos pré-requisitos ({:.2})", readiness),
-        ];
+        let score = match policy {
+            "learn_next" => learn_score,
+            "review_next" => review_score,
+            "balanced" => balanced_score,
+            _ => {
+                if event_count == 0 || concept_mastery <= threshold {
+                    learn_score
+                } else {
+                    review_score
+                }
+            }
+        };
 
+        
+
+        // ── Enriched explainability why ────────────────────────────────────
+        let mut why = Vec::new();
+
+        // 1. Prereq readiness with names
+        if prereq_details.is_empty() {
+            why.push("Sem pré-requisitos: acesso direto ao conceito".to_string());
+        } else {
+            let weakest = prereq_details.first().unwrap();
+            if is_ready {
+                let others: Vec<String> = prereq_details
+                    .iter()
+                    .skip(1)
+                    .map(|(n, r)| format!("{} (r={:.2})", n, r))
+                    .collect();
+                let others_str = if others.is_empty() {
+                    String::new()
+                } else {
+                    format!("; outros: {}", others.join(", "))
+                };
+                why.push(format!(
+                    "Pronto: pré-req '{}' (r={:.2}){} — readiness={:.2} ≥ limiar",
+                    weakest.0, weakest.1, others_str, readiness
+                ));
+            } else {
+                why.push(format!(
+                    "Bloqueado: pré-req '{}' com readiness insuficiente (r={:.2})",
+                    weakest.0, weakest.1
+                ));
+            }
+        }
+
+        // 2. Conceptual gap
+        why.push(format!(
+            "Recomendado: lacuna conceptual alta (mastery={:.2}, gap={:.2})",
+            concept_mastery,
+            1.0 - concept_mastery
+        ));
+
+        // 3. Active policy + scores
+        why.push(format!(
+            "Política '{}': learn={:.3}, review={:.3}",
+            policy, learn_score, review_score
+        ));
+
+        // 4. Uncertainty
+        if concept_uncertainty >= 0.3 {
+            why.push(format!(
+                "Prioridade aumentada por incerteza residual (u={:.3})",
+                concept_uncertainty
+            ));
+        } else if concept_uncertainty < 0.05 {
+            why.push(format!(
+                "Incerteza muito baixa (u={:.3}): mastery bem calibrada",
+                concept_uncertainty
+            ));
+        }
+
+        // 5. Decay penalization
+        if decay_signal > 0.02 {
+            why.push(format!(
+                "Penalização por decay: mastery efetiva reduzida em {:.3} (evidência antiga)",
+                decay_signal
+            ));
+        }
+
+        // 6. Inconsistency
+        if inconsistency_signal > 0.15 {
+            why.push(format!(
+                "Variabilidade de scores recentes: {:.2} — inconsistência detetada",
+                inconsistency_signal
+            ));
+        }
+
+        // 7. Soft gate
         if !is_ready {
             why.push(format!(
-                "Abaixo do limiar ({:.2}), mantido por soft-gating (k={:.2})",
+                "Abaixo do limiar ({:.2}): mantido por soft-gating (k={:.2})",
                 threshold, soft_k
             ));
         }
 
-        if prereqs.is_empty() && root_score_penalty > 0.0 {
+        // 8. Root penalty
+        if direct_prereqs == 0 && root_score_penalty > 0.0 {
             why.push(format!(
-                "Conceito raiz com penalização suave ({:.2})",
-                root_score_penalty
+                "Penalização de raiz aplicada: conceito sem pré-requisitos (×{:.2})",
+                root_multiplier
             ));
         }
 
-        if concept_uncertainty >= 0.3 {
-            why.push(format!(
-                "Incerteza elevada ({:.2}) por evidência limitada",
-                concept_uncertainty
-            ));
-        } else {
-            why.push(format!("Incerteza controlada ({:.2})", concept_uncertainty));
-        }
+        let decomposition = ScoreDecomposition {
+            readiness,
+            gap: 1.0 - concept_mastery,
+            uncertainty: concept_uncertainty,
+            decay_signal,
+            inconsistency: inconsistency_signal,
+            gate_factor,
+            root_multiplier,
+            policy_used: policy.to_string(),
+            weakest_prereqs: prereq_details,
+        };
 
         ranked.push(NextToStudyItem {
             concept_id: concept.id.clone(),
@@ -1234,6 +1553,7 @@ fn rank_next_to_study(
             gate_factor,
             event_count,
             why,
+            score_decomposition: decomposition,
         });
         candidates_ranked += 1;
     }
@@ -2019,6 +2339,8 @@ fn approach_definitions() -> Vec<ApproachConfig> {
             readiness_threshold: 0.5,
             min_readiness: 0.1,
             readiness_gamma: 0.35,
+            readiness_distance_delta: 0.85,
+            ranking_policy: "balanced",
             root_penalty: 0.12,
             meta_strength: 0.0,
             soft_gate_k: Some(1.6),
@@ -2032,6 +2354,8 @@ fn approach_definitions() -> Vec<ApproachConfig> {
             readiness_threshold: 0.5,
             min_readiness: 0.1,
             readiness_gamma: 0.35,
+            readiness_distance_delta: 0.85,
+            ranking_policy: "balanced",
             root_penalty: 0.12,
             meta_strength: 0.6,
             soft_gate_k: Some(1.6),
@@ -2045,6 +2369,8 @@ fn approach_definitions() -> Vec<ApproachConfig> {
             readiness_threshold: 0.55,
             min_readiness: 0.1,
             readiness_gamma: 0.35,
+            readiness_distance_delta: 0.80,
+            ranking_policy: "balanced",
             root_penalty: 0.12,
             meta_strength: 1.0,
             soft_gate_k: Some(1.8),
@@ -2110,6 +2436,21 @@ pub fn olm_add_edge(state: State<OlmState>, edge: ConceptEdge) -> Result<Concept
         || !store.concepts.contains_key(&edge.target_id)
     {
         return Err("Both concepts must exist before creating an edge".to_string());
+    }
+
+    // Cycle detection: reject if target_id is already an ancestor of prereq_id.
+    let mut prereq_graph: HashMap<String, Vec<String>> = HashMap::new();
+    for e in &store.edges {
+        prereq_graph
+            .entry(e.target_id.clone())
+            .or_default()
+            .push(e.prereq_id.clone());
+    }
+    let ancestors = ancestor_distances(&edge.prereq_id, &prereq_graph);
+    if ancestors.contains_key(&edge.target_id) {
+        return Err(
+            "Adding this prerequisite would create a cycle in the knowledge graph".to_string(),
+        );
     }
 
     let exists = store
@@ -2201,9 +2542,9 @@ pub fn olm_map_content_concept(
 #[tauri::command]
 pub fn olm_ingest_event(state: State<OlmState>, event: StudyEvent) -> Result<IngestResult, String> {
     let mut store = state.inner.lock().map_err(|_| "State lock poisoned")?;
-    let updated_concepts = ingest_into_store(&mut store, &event, DEFAULT_META_STRENGTH)?;
+    let meta_strength = store.config.meta_strength;
 
-    Ok(IngestResult { updated_concepts })
+    ingest_into_store(&mut store, &event, meta_strength)
 }
 
 #[tauri::command]
@@ -2230,10 +2571,7 @@ pub fn olm_get_state(state: State<OlmState>) -> Result<Vec<ConceptStateView>, St
                 concept_id: concept.id.clone(),
                 name: concept.name.clone(),
                 mastery: mastery(&effective_state),
-                uncertainty: uncertainty_with_formula(
-                    &effective_state,
-                    &store.config.uncertainty_formula,
-                ),
+                uncertainty: uncertainty(&effective_state),
                 alpha: effective_state.alpha,
                 beta: effective_state.beta,
                 last_update: concept_state.last_update,
@@ -2278,7 +2616,7 @@ pub fn olm_next_to_study(
     Ok(next_to_study_from_store(
         &store,
         top,
-        lambda.unwrap_or(config.lambda),
+        lambda.unwrap_or(config.ranking_lambda_resolved()),
         readiness_threshold.unwrap_or(config.theta),
         &exclude_set,
         domain_filter.as_deref(),
@@ -2328,12 +2666,13 @@ pub fn olm_run_synthetic_scenarios_seeded_with_options(
                 approach.readiness_threshold,
                 approach.min_readiness,
                 approach.readiness_gamma,
+                approach.readiness_distance_delta,
+                approach.ranking_policy,
                 approach.soft_gate_k,
                 approach.root_penalty,
                 approach.stop_mastery,
                 &sim_exclude,
                 None,
-                "standard",
             );
             let top_recommendation = ranked.first().map(|item| item.concept_id.clone());
             let top_recommendations: Vec<String> =
@@ -2677,7 +3016,7 @@ pub fn olm_next_content_to_study(
     Ok(next_content_to_study_from_store(
         &store,
         top,
-        lambda.unwrap_or(config.lambda),
+        lambda.unwrap_or(config.ranking_lambda_resolved()),
         readiness_threshold.unwrap_or(config.theta),
         &exclude_set,
         domain_filter.as_deref(),
@@ -2700,16 +3039,17 @@ pub fn olm_get_debug_ranking(
     let (candidates, diagnostics) = rank_next_to_study(
         &store,
         top,
-        config.lambda,
+        config.ranking_lambda_resolved(),
         config.theta,
         config.min_readiness,
         config.gamma,
+        config.readiness_distance_delta,
+        &config.ranking_policy,
         Some(config.soft_gate_k),
         config.root_penalty,
         config.stop_mastery,
         &exclude_set,
         domain_filter.as_deref(),
-        &config.uncertainty_formula,
     );
     Ok(RankingDebugResponse {
         candidates,
@@ -2765,8 +3105,28 @@ mod tests {
             "study_read",
             json!({"duration_sec": 150.0, "target_duration_sec": 300.0}),
         );
-        // 0.5 * (150/300) = 0.25
-        assert!((event_score(&e) - 0.25).abs() < 1e-9);
+        // 0.5 + 0.10 * (150/300) = 0.55
+        assert!((event_score(&e) - 0.55).abs() < 1e-9);
+    }
+
+    #[test]
+    fn test_event_score_review() {
+        let e = make_event(
+            "review",
+            json!({"duration_sec": 300.0, "target_duration_sec": 600.0}),
+        );
+        // 0.5 + 0.15 * (300/600) = 0.575
+        assert!((event_score(&e) - 0.575).abs() < 1e-9);
+    }
+
+    #[test]
+    fn test_event_score_note_taking() {
+        let e = make_event(
+            "note_taking",
+            json!({"chars_written": 150.0, "target_chars": 300.0}),
+        );
+        // 0.5 + 0.15 * (150/300) = 0.575
+        assert!((event_score(&e) - 0.575).abs() < 1e-9);
     }
 
     #[test]
@@ -2784,37 +3144,35 @@ mod tests {
     #[test]
     fn test_confidence_weight_present() {
         let e = make_event("quiz_attempt", json!({"confidence": 0.8}));
-        // 0.5 + 0.5 * 0.8 = 0.9
-        assert!((confidence_weight(&e) - 0.9).abs() < 1e-9);
+        // 1 - lambda * |confidence-objective| = 1 - 0.7 * |0.8-1.0| = 0.86
+        assert!((confidence_weight(&e, Some(1.0), 0.7) - 0.86).abs() < 1e-9);
     }
 
     #[test]
     fn test_confidence_weight_absent() {
         let e = make_event("quiz_attempt", json!({}));
-        assert_eq!(confidence_weight(&e), 1.0);
+        assert_eq!(confidence_weight(&e, Some(1.0), 0.7), 1.0);
     }
 
     #[test]
     fn test_mastery_uncertainty_basic() {
         let s = make_state_cs(3.0, 1.0);
         assert!((mastery(&s) - 0.75).abs() < 1e-9);
-        assert!((uncertainty(&s) - 0.25).abs() < 1e-9);
+        assert!((uncertainty(&s) - 0.45).abs() < 1e-9);
     }
 
     #[test]
     fn test_mastery_initial() {
         let s = make_state_cs(1.0, 1.0);
         assert!((mastery(&s) - 0.5).abs() < 1e-9);
-        assert!((uncertainty(&s) - 0.5).abs() < 1e-9);
+        // Beta(1,1) is the uniform prior: maximum uncertainty, normalized to 1.0.
+        assert!((uncertainty(&s) - 1.0).abs() < 1e-9);
     }
 
     #[test]
-    fn test_uncertainty_sqrt_formula() {
+    fn test_uncertainty_is_canonical_beta_variance() {
         let s = make_state_cs(3.0, 1.0); // total = 4
-        let u_std = uncertainty_with_formula(&s, "standard");
-        let u_sqrt = uncertainty_with_formula(&s, "sqrt");
-        assert!((u_std - 0.25).abs() < 1e-9); // 1/4
-        assert!((u_sqrt - 0.5).abs() < 1e-9); // 1/sqrt(4)
+        assert!((uncertainty(&s) - 0.45).abs() < 1e-9);
     }
 
     #[test]
@@ -2909,12 +3267,13 @@ mod tests {
             0.5,
             0.1,
             0.35,
+            0.7,
+            "balanced",
             Some(1.6),
             0.0,
             0.99,
             &exclude,
             None,
-            "standard",
         );
         // With penalty=0.5
         let (ranked_penalty, _) = rank_next_to_study(
@@ -2924,12 +3283,13 @@ mod tests {
             0.5,
             0.1,
             0.35,
+            0.7,
+            "balanced",
             Some(1.6),
             0.5,
             0.99,
             &exclude,
             None,
-            "standard",
         );
 
         let root_no_penalty = ranked_no_penalty
@@ -2979,12 +3339,13 @@ mod tests {
             0.5,
             0.1,
             0.35,
+            0.7,
+            "balanced",
             Some(1.6),
             0.12,
             0.7,
             &exclude,
             None,
-            "standard",
         );
 
         assert!(
@@ -3022,12 +3383,13 @@ mod tests {
             0.5,
             0.1,
             0.35,
+            0.7,
+            "balanced",
             Some(1.6),
             0.12,
             0.7,
             &exclude,
             None,
-            "standard",
         );
 
         assert!(
@@ -3066,12 +3428,13 @@ mod tests {
             0.5,
             0.1,
             0.35,
+            0.7,
+            "balanced",
             Some(1.6),
             0.12,
             0.99,
             &exclude,
             None,
-            "standard",
         );
 
         assert!(
@@ -3123,12 +3486,13 @@ mod tests {
             0.5,
             0.1,
             0.35,
+            0.7,
+            "balanced",
             Some(1.6),
             0.12,
             0.99,
             &exclude,
             Some("math"),
-            "standard",
         );
 
         assert!(
@@ -3229,12 +3593,13 @@ mod tests {
             0.5,
             0.1,
             0.35,
+            0.7,
+            "balanced",
             Some(2.0),
             0.0,
             0.99,
             &exclude,
             None,
-            "standard",
         );
         // k=3 strict gate
         let (ranked_strict, _) = rank_next_to_study(
@@ -3244,12 +3609,13 @@ mod tests {
             0.5,
             0.1,
             0.35,
+            0.7,
+            "balanced",
             Some(3.0),
             0.0,
             0.99,
             &exclude,
             None,
-            "standard",
         );
 
         let target_soft = ranked_soft.iter().find(|i| i.concept_id == "target");
@@ -3263,6 +3629,148 @@ mod tests {
         assert!(
             target_soft.unwrap().score >= target_strict.unwrap().score,
             "soft gating (k=2) should give higher score than strict (k=3) for unready concept"
+        );
+    }
+
+    #[test]
+    fn test_multi_hop_readiness_uses_ancestors() {
+        let mut store = OlmStore::default();
+        for id in ["a", "b", "c"] {
+            store.concepts.insert(
+                id.to_string(),
+                Concept {
+                    id: id.to_string(),
+                    name: id.to_uppercase(),
+                    description: None,
+                },
+            );
+        }
+
+        // a -> b -> c, so c must account for ancestor a (distance 2) as well.
+        store.edges.push(ConceptEdge {
+            prereq_id: "a".to_string(),
+            target_id: "b".to_string(),
+        });
+        store.edges.push(ConceptEdge {
+            prereq_id: "b".to_string(),
+            target_id: "c".to_string(),
+        });
+
+        // Ancestor a is unready (very low mastery), b is fully ready (rp ~ 1).
+        store.concept_state.insert(
+            "a".to_string(),
+            ConceptState {
+                alpha: 1.0,
+                beta: 40.0,
+                last_update: None,
+            },
+        );
+        store.concept_state.insert(
+            "b".to_string(),
+            ConceptState {
+                alpha: 10.0,
+                beta: 1.0,
+                last_update: None,
+            },
+        );
+
+        let exclude = HashSet::new();
+        let (ranked, _) = rank_next_to_study(
+            &store,
+            None,
+            0.7,
+            0.5,
+            0.2,
+            0.35,
+            0.85,
+            "balanced",
+            Some(1.6),
+            0.0,
+            0.99,
+            &exclude,
+            None,
+        );
+
+        assert!(
+            ranked.iter().all(|row| row.concept_id != "c"),
+            "c should be excluded by low multi-hop readiness due to ancestor a"
+        );
+    }
+
+    #[test]
+    fn test_adaptive_policy_prefers_review_for_mastered_concept() {
+        let mut store = OlmStore::default();
+        store.concepts.insert(
+            "stable".to_string(),
+            Concept {
+                id: "stable".to_string(),
+                name: "Stable".to_string(),
+                description: None,
+            },
+        );
+
+        store.concept_state.insert(
+            "stable".to_string(),
+            ConceptState {
+                alpha: 12.0,
+                beta: 1.0,
+                last_update: None,
+            },
+        );
+
+        // Contradictory recent evidence should raise inconsistency and make review intent visible.
+        store.evidence.insert(
+            "stable".to_string(),
+            vec![
+                EvidenceChunk {
+                    event_id: "e1".to_string(),
+                    delta_alpha: 0.1,
+                    delta_beta: 0.0,
+                    event_type: "quiz_attempt".to_string(),
+                    score: 1.0,
+                    applied_weight: 0.1,
+                    metacognitive_weight: 1.0,
+                    metacognitive_alignment: 1.0,
+                    created_at: "2026-01-01T00:00:00Z".to_string(),
+                },
+                EvidenceChunk {
+                    event_id: "e2".to_string(),
+                    delta_alpha: 0.0,
+                    delta_beta: 0.1,
+                    event_type: "quiz_attempt".to_string(),
+                    score: 0.0,
+                    applied_weight: 0.1,
+                    metacognitive_weight: 1.0,
+                    metacognitive_alignment: 1.0,
+                    created_at: "2026-01-01T00:01:00Z".to_string(),
+                },
+            ],
+        );
+
+        let exclude = HashSet::new();
+        let (ranked, _) = rank_next_to_study(
+            &store,
+            None,
+            0.7,
+            0.5,
+            0.1,
+            0.35,
+            0.85,
+            "adaptive",
+            Some(1.6),
+            0.0,
+            0.99,
+            &exclude,
+            None,
+        );
+
+        let stable = ranked.iter().find(|row| row.concept_id == "stable").unwrap();
+        assert!(
+            stable
+                .why
+                .iter()
+                .any(|line| line.contains("adaptive")),
+            "adaptive policy diagnostics should be present"
         );
     }
 
@@ -3304,11 +3812,33 @@ mod tests {
     fn test_olm_config_default() {
         let cfg = OlmConfig::default();
         assert!((cfg.lambda - 0.7).abs() < 1e-9);
+        assert!(cfg.ranking_lambda.is_none());
+        assert!(cfg.confidence_mismatch_lambda.is_none());
+        assert!((cfg.ranking_lambda_resolved() - 0.7).abs() < 1e-9);
+        assert!((cfg.confidence_mismatch_lambda_resolved() - 0.7).abs() < 1e-9);
         assert!((cfg.gamma - 0.35).abs() < 1e-9);
+        assert!((cfg.readiness_blend_eta - 0.7).abs() < 1e-9);
+        assert!((cfg.readiness_distance_delta - 0.85).abs() < 1e-9);
+        assert_eq!(cfg.ranking_policy, "adaptive");
         assert!((cfg.stop_mastery - 0.85).abs() < 1e-9);
         assert!(!cfg.decay_enabled);
-        assert_eq!(cfg.uncertainty_formula, "standard");
         assert!(cfg.exclude_concepts.is_empty());
+    }
+
+    #[test]
+    fn test_split_lambda_resolution_prefers_specific_values() {
+        let mut cfg = OlmConfig::default();
+        cfg.lambda = 0.4;
+
+        // Backward-compatible fallback to legacy shared lambda.
+        assert!((cfg.ranking_lambda_resolved() - 0.4).abs() < 1e-9);
+        assert!((cfg.confidence_mismatch_lambda_resolved() - 0.4).abs() < 1e-9);
+
+        cfg.ranking_lambda = Some(0.8);
+        cfg.confidence_mismatch_lambda = Some(0.2);
+
+        assert!((cfg.ranking_lambda_resolved() - 0.8).abs() < 1e-9);
+        assert!((cfg.confidence_mismatch_lambda_resolved() - 0.2).abs() < 1e-9);
     }
 
     #[test]

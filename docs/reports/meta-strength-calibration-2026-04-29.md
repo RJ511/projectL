@@ -1,13 +1,13 @@
 # Meta Strength Calibration Report
 
-Generated at: 2026-03-10T12:25:12.769Z
+Generated at: 2026-04-29T09:42:27.513Z
 Seed range: 0..29 (30 seeds)
 
 ## Recommendation
 
 - Recommended approach: `metacog_strict`
 - Recommended meta_strength: `1`
-- Selection rationale: highest composite score (test pass, test MRR, hit@3).
+- Selection rationale: highest training pass rate, then highest training MRR, then highest hit@3.
 
 ## Aggregated Metrics
 

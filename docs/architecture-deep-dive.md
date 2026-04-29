@@ -93,6 +93,14 @@ Este e o documento tecnico canonico para arquitetura, logica OLM e decisoes de i
 - Eventos automaticos existem, mas a cobertura de eventos objetivos ainda e parcial.
 - Check-in metacognitivo 1..4 adiciona sinal subjetivo util, mas suscetivel a ruido.
 - Segmentacao de recomendacao por item agora usa `domain_id` explicito em `content_items`.
+- A incerteza por conceito usa formula de variancia Beta (`alpha*beta / ((alpha+beta)^2*(alpha+beta+1))`) no runtime OLM.
+- O peso de ingestao foi organizado em tres blocos equivalentes no runtime (`w_evidence`, `r_reliability`, `g_safety`) sem alterar o peso final aplicado.
+- O peso de confianca do evento usa distancia a objetivo: `w_conf = clamp(1 - confidence_mismatch_lambda*|confidence-objective|, 0, 1)` com fallback `1.0` quando faltam sinais.
+- A ingestao valida primeiro os conceitos resolvidos: eventos sem qualquer conceito existente sao rejeitados antes de entrar em `study_events`; eventos repetidos por `event_id` devolvem no-op com `duplicate=true`.
+- A criacao de arestas (`olm_add_edge`) rejeita ciclos no grafo de prerequisitos, alem de self-edges e IDs inexistentes.
+- A readiness usa ancestrais multi-hop no grafo com blend controlado por `readiness_blend_eta`: `R(c) = eta*R_min + (1-eta)*R_mean`, onde `R_min = min_{a in Ancestors(c)}(delta^d(a,c) * r_a)` e `R_mean` e a media desses mesmos termos, com `r_a = clamp(m_a - gamma*u_a, 0, 1)`.
+- O ranking e orientado por politica (`ranking_policy`): `learn_next` (lacuna de mastery), `review_next` (incerteza + decay + inconsistencia), `adaptive` (switch por `theta`) e `balanced` (formula classica com `ranking_lambda`).
+- Modelo de estado com decay in-place: `concept_state.alpha/beta` guardam estado efetivo em `last_update`; antes de ler ou atualizar um conceito, o backend aplica decay de `last_update -> now`, e no update persiste `last_update = now`.
 
 ## 6. Riscos tecnicos e pontos de atencao (importante para resolver)
 
@@ -105,7 +113,7 @@ Este e o documento tecnico canonico para arquitetura, logica OLM e decisoes de i
 
 - Dependencia de convencoes de prefixo para dominio.
 - Impacto: erros silenciosos de filtro/ranking.
-- Mitigacao implementada (fluxo de item-ranking): filtro por `domain_id` explicito em `olm_next_content_to_study`; validacao de IDs no save de perfil e no `olm_upsert_content_item`.
+- Mitigacao implementada (fluxo de item-ranking): filtro por `domain_id` explicito em `olm_next_content_to_study`; normalizacao/namespacing de perfis no frontend e validacao estrita de `domain_id` em `olm_upsert_content_item`.
 
 - Corrupcao de estado local (`app_state.json`).
 - Impacto: perda de contexto/plano/config.
@@ -120,7 +128,7 @@ Este e o documento tecnico canonico para arquitetura, logica OLM e decisoes de i
 1. Fortalecer mapeamento `content_concepts` (obrigatorio para melhorar ranking unico).
 2. Adicionar validacoes de dominio/ID na camada de settings e ingestao.
 3. Implementar escrita atomica para `app_state.json` com rollback simples.
-4. Introduzir testes e2e de fluxos criticos:
+4. Cobrir fluxos criticos com testes automatizados, com backend unit tests ja presentes para:
 
 - abrir ficheiro -> evento,
 - guardar quiz/teste -> meta check-in,
@@ -133,7 +141,7 @@ Este e o documento tecnico canonico para arquitetura, logica OLM e decisoes de i
 
 Status atual:
 
-- Itens 1, 2, 3 e 4 implementados.
+- Itens 1, 2 e 3 implementados; o item 4 tem cobertura backend automatizada para os fluxos criticos do OLM, mas nao existe ainda uma suite e2e dedicada no workspace.
 - Item 6 implementado: script `scripts/calibrate-meta-strength.mjs` + `npm run calibrate:meta`.
 - Item 5 parcialmente implementado: calibracao sintetica pronta; falta integrar logs reais anonimizados na segunda fase de validacao.
 - A calibracao no simulador foi ajustada para priorizar `Hit@1` (`train_pass_rate`) e usar split adaptativo em cenarios gerados (70/30).
