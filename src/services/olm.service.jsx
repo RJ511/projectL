@@ -24,6 +24,10 @@ export function mapContentConcept(map) {
   return call("olm_map_content_concept", { map });
 }
 
+export function removeContentConceptMaps(contentId) {
+  return call("olm_remove_content_concept_maps", { content_id: contentId });
+}
+
 export function ingestEvent(event) {
   return call("olm_ingest_event", { event });
 }

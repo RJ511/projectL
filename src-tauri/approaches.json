@@ -1,0 +1,76 @@
+[
+  {
+    "id": "lambda_low",
+    "name": "Lambda 0.4 (uncertainty-heavy)",
+    "description": "Shifts weight strongly toward uncertainty over mastery gap",
+    "base": "baseline",
+    "lambda": 0.4
+  },
+  {
+    "id": "lambda_high",
+    "name": "Lambda 0.85 (mastery-heavy)",
+    "description": "Shifts weight strongly toward mastery gap over uncertainty",
+    "base": "baseline",
+    "lambda": 0.85
+  },
+  {
+    "id": "loose_gate",
+    "name": "Loose readiness gate",
+    "description": "Low threshold + soft gate k=1.0 — admits more candidates",
+    "base": "baseline",
+    "readiness_threshold": 0.3,
+    "min_readiness": 0.05,
+    "soft_gate_k": 1.0
+  },
+  {
+    "id": "strict_gate",
+    "name": "Strict readiness gate",
+    "description": "High threshold + soft gate k=2.2 — only well-ready concepts pass",
+    "base": "baseline",
+    "readiness_threshold": 0.65,
+    "min_readiness": 0.15,
+    "soft_gate_k": 2.2
+  },
+  {
+    "id": "meta_sweep_low",
+    "name": "Meta strength 0.3",
+    "description": "Mild metacognitive signal — less influence than metacog_balanced",
+    "base": "metacog_balanced",
+    "meta_strength": 0.3
+  },
+  {
+    "id": "meta_sweep_high",
+    "name": "Meta strength 1.5",
+    "description": "Aggressive metacognitive signal beyond metacog_strict range",
+    "base": "metacog_strict",
+    "meta_strength": 1.5
+  },
+  {
+    "id": "no_root_penalty",
+    "name": "No root penalty",
+    "description": "Removes the penalty for root-node concepts",
+    "base": "baseline",
+    "root_penalty": 0.0
+  },
+  {
+    "id": "high_root_penalty",
+    "name": "High root penalty 0.35",
+    "description": "Strongly penalises root concepts to push toward deeper nodes",
+    "base": "baseline",
+    "root_penalty": 0.35
+  },
+  {
+    "id": "early_stop",
+    "name": "Early stop mastery 0.85",
+    "description": "Retires concepts at 85% mastery instead of 99%",
+    "base": "baseline",
+    "stop_mastery": 0.85
+  },
+  {
+    "id": "tight_distance",
+    "name": "Tight readiness distance delta 0.6",
+    "description": "Reduces the distance contribution to readiness scoring",
+    "base": "baseline",
+    "readiness_distance_delta": 0.6
+  }
+]

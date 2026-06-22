@@ -11,11 +11,12 @@ import { markdown, markdownLanguage } from "@codemirror/lang-markdown";
 import { languages } from "@codemirror/language-data";
 
 import { inlinePreview } from "../../components/extensions/inlinePreview";
+import { inlineConceptSuggestion } from "../../components/extensions/inlineConceptSuggestion";
 import { wikiAutocomplete } from "../../components/extensions/wikiAutoComplete";
 import { openFileEffect } from "../../components/editor/effects/openFileEffect";
 import "../../components/extensions/wikiDropdown.css";
 import "../../components/extensions/inlinePreview.css";
-
+import "../../components/extensions/inlineConceptSuggestion.css";
 
 export default function CodeEditor({ value, onChange, tree = [], openFile }) {
   const viewRef = useRef(null);
@@ -41,10 +42,9 @@ export default function CodeEditor({ value, onChange, tree = [], openFile }) {
   }
 
   function getMdFileNodes() {
-    
     const all = flattenFiles(treeRef.current);
     console.log(all);
-    return all
+    return all;
   }
 
   function getMdFileNames() {
@@ -64,6 +64,7 @@ export default function CodeEditor({ value, onChange, tree = [], openFile }) {
         lineNumbers(),
         EditorView.lineWrapping,
         inlinePreview(),
+        inlineConceptSuggestion(),
 
         // usa a tua versão manual sem CodeMirror autocomplete
         wikiAutocomplete(() => getMdFileNames()),

@@ -221,6 +221,11 @@ A função `normalize_maps` usa esta ordem:
 
 Depois dessa resolução inicial, a ingestão filtra apenas conceitos que existem em `store.concepts` e renormaliza os pesos resultantes.
 
+No runtime atual (v3):
+
+- Quando o mapeamento vem de `content_id` (sem `concept_ids` explícitos), a ingestão aplica também `mapping_quality.penalty` ao bloco `w_evidence`.
+- Quando o evento traz `concept_ids` explícitos, esse penalty não é aplicado (penalty = 1.0).
+
 Regras adicionais do runtime atual:
 
 1. Se o evento não resolver para nenhum conceito mapeado -> erro de ingestão.
@@ -250,6 +255,9 @@ Todos os IDs são normalizados para o namespace do domínio no formato `<domíni
 Nota operacional:
 
 - `content_concepts` e eventos automáticos de `review` usam apenas os conceitos explicitamente declarados no lado esquerdo da marcação (`conceito`), não os pré-requisitos inferidos.
+- Marcação inline suporta peso opcional por conceito declarado: `;;;conceito [0.7];;;` e `;;;conceito:pr1,pr2 [0.6];;;` (intervalo válido `(0, 1]`; default `1.0`).
+- Se o ficheiro não tiver nenhuma marcação inline válida, o frontend cria um conceito fallback por ficheiro (`<dominio>.file.<slug-do-ficheiro>`), mapeia `content_id -> fallback` e usa esse conceito no evento automático.
+- Antes de regravar mapeamentos de um ficheiro, o frontend remove mapeamentos antigos desse `content_id` para evitar drift de `content_concepts`.
 
 ## 6.1 Readiness por pré-requisito
 
@@ -398,6 +406,7 @@ A segmentação por domínio pode ser reforçada com:
 - Eventos automáticos editor -> OLM estão ativos com `review` ao abrir ficheiro (`openFile` em `useFileSystem.jsx`).
 - Guardar ficheiros de teste/quiz (`quiz-*` / `teste-*`) pode disparar check-in metacognitivo 1-4 e ingestão `self_assessment`.
 - Eventos automáticos do editor só ingerem conceito(s) quando existem marcações inline no ficheiro (não promovem o ficheiro a conceito por defeito).
+- Eventos automáticos do editor sempre têm mapeamento conceitual: com marcação inline usam conceitos declarados; sem marcação usam conceito fallback por ficheiro.
 - O conteúdo pode declarar conceitos inline com `;;;nome do conceito;;;` e pré-requisitos com `;;;conceito:prereq;;;` (múltiplos: `;;;conceito:pr1,pr2;;;`), mapeados para IDs `<domínio>.inline.<slug>`.
 - O catálogo canónico de conceitos inline fica persistido em `.projectl-data/app_state.json` na chave `inlineConceptCatalog.v1`, no formato `concept_id -> { name, requires[] }`.
 - Fórmulas já implementadas com defaults robustos (fallbacks para score, confidence e readiness).
@@ -411,6 +420,7 @@ A segmentação por domínio pode ser reforçada com:
   2. antes de atualizar por evento, aplica-se decay de `last_update -> now`, depois soma-se `delta_alpha/delta_beta`;
   3. após update, guarda-se `last_update = now`.
 - A semi-vida ativa no runtime deste modelo é `decay_half_life_days`.
+- **`simulated_now` (campo runtime de `OlmConfig`, nunca serializado):** durante a simulação longitudinal (`simulate_longitudinal_cycles`), o campo `OlmConfig.simulated_now` é preenchido com o timestamp do ciclo corrente antes de cada chamada a `rank_next_to_study`/`ingest_into_store`. `decay_state_if_needed` usa `simulated_now` quando presente em vez de `Utc::now()`, evitando o colapso de mastery causado pela defasagem entre timestamps sintéticos históricos e a data real de execução.
 
 ## 11) Endpoints/comandos do OLM (Tauri)
 
@@ -422,6 +432,7 @@ A segmentação por domínio pode ser reforçada com:
 - `olm_list_edges`
 - `olm_upsert_content_item`
 - `olm_map_content_concept`
+- `olm_remove_content_concept_maps` - remove todos os mapeamentos `content_id -> concept_id` para um conteúdo (retorna quantidade removida)
 - `olm_ingest_event` - devolve `IngestResult { updated_concepts, duplicate }`; rejeita eventos sem conceitos válidos e não reaplica eventos duplicados
 - `olm_get_state`
 - `olm_get_explain`
@@ -615,29 +626,71 @@ Parâmetros úteis para gerar muitos casos distintos rapidamente:
 
 ### 13.1 Approaches atuais
 
-1. `baseline` — sem metacognição (`meta_strength=0`)
-2. `metacog_balanced` — metacognição moderada (`meta_strength=0.6`) + **soft gating** (`k=2.0`)
-3. `metacog_strict` — metacognição forte + gating mais exigente (`meta_strength=1.0`) + **soft gating** (`k=3.0`)
+O simulador inclui baselines obrigatórios + ablações explícitas. Os parâmetros estruturais (`stop_mastery`, `min_readiness`, `soft_gate_k`, `lambda`, `readiness_threshold`) são normalizados entre as ablações de metacognição para que apenas `meta_strength` varie:
 
-Todos usam `readiness_gamma=0.35` e `min_readiness=0.1` no simulador atual.
+1. `random_baseline` — **shuffle seeded** por (cenário, seed): permutação verdadeiramente aleatória, reproducível; eliminada a implementação anterior baseada em hash determinístico por conceito
+2. `mastery_only` — `score = 1 - mastery` (sem readiness/uncertainty, `soft_gate_k=0`)
+3. `mastery_only_gated` — `score = 1 - mastery` **com readiness gating ativo** (`soft_gate_k=1.6`); ablação limpa que isola o efeito de "gap" vs "gap + readiness"
+4. `uncertainty_only` — `score = uncertainty`
+5. `curriculum_linear` — ordem curricular linear (primeiro não dominado)
+6. `no_root_penalty` — ablação sem penalização de conceitos raiz (`root_penalty=0`)
+7. `no_prereq_gating` — lógica balanced com gating desligado (`min_readiness=0`, `soft_gate_k=0`)
+8. `no_mapping_penalty` — ablação sem penalização de qualidade de mapeamento
+9. `no_metacognition` — ablação explícita (`meta_strength=0`); parâmetros de referência: `stop_mastery=0.85`, `soft_gate_k=1.6`, `lambda=0.7`, `readiness_threshold=0.5`
+10. `metacog_moderate` — metacognição moderada (`meta_strength=0.6`); parâmetros idênticos a `no_metacognition`
+11. `metacog_strict` — metacognição forte (`meta_strength=1.0`); parâmetros idênticos a `no_metacognition`
+12. `decay_hl7` — decay ativo (`half_life_days=7`)
+13. `decay_hl30` — decay ativo (`half_life_days=30`)
 
-### 13.2 Cenários S1–S6
+Também foram introduzidos `stop_mastery` operacionais (`0.85/0.90`) para impedir dominância persistente de conceitos raiz.
 
-- S1 Progressão linear
+### 13.2 Cenários canónicos S1–S12
+
+O modo canónico foi expandido para 12 cenários (6-10 conceitos, 10-24 eventos):
+
+- S1 Progressão linear simples
 - S2 Pré-requisito bloqueado
-- S3 Erros repetidos no core
-- S4 Incerteza alta
-- S5 Multi-fonte
-- S6 Cobertura parcial
+- S3 Conceito core com erros repetidos
+- S4 Alta incerteza por pouca evidência
+- S5 Overconfidence
+- S6 Underconfidence
+- S7 Vários conceitos fracos
+- S8 Conceito avançado com pré-requisito fraco
+- S9 Todos os conceitos quase dominados
+- S10 Todos os conceitos desconhecidos
+- S11 Conteúdo com mapeamento fraco
+- S12 Conteúdo com mapeamento correcto
+
+Nos cenários S9/S10 existem timestamps antigos (`2025-01-01`, `2025-06-01`, `2026-01-01`) para exercício de decay temporal.
+
+### 13.2.1 `expected_any` com readiness pedagógico
+
+O ground truth `expected_any` usa a função `expected_any_from_true_mastery(true_mastery, edges)`.
+
+**Prioridade 1 (preferida)** — conceitos com `true_mastery < 0.55` **e** cujos pré-requisitos diretos têm todos `true_mastery >= 0.60`. Alinha o ground truth com sequenciamento pedagogicamente correto: o sistema deve recomendar conceitos genuinamente aprendíveis agora.
+
+**Prioridade 2 (fallback)** — qualquer conceito com `true_mastery < 0.55` quando nenhum unblocked weak existe (todos os fracos têm pelo menos um pré-requisito fraco).
+
+**Prioridade 3 (último recurso)** — o conceito com menor `true_mastery` quando não há nenhum < 0.55 (e.g. cenário `almost_mastered`).
+
+Tie-breaking determinístico: o sort secundário é por `concept_id` (alfabético), eliminando a não-determinismo anterior em HashMap com valores iguais (S4 `high_uncertainty`).
 
 ### 13.3 Output do simulador
 
 Por approach, devolve:
 
-- `pass_rate` (Hit@1)
+- `hit_at_1_rate` (equivalente a `pass_rate`, mantido por compatibilidade)
+- `pass_rate` documentado explicitamente como Hit@1
 - `hit_at_3_rate`, `avg_mrr`, `avg_ndcg_at_3`
+- `average_rank_of_expected`
 - métricas treino/teste (`train_pass_rate`, `test_pass_rate`, `train_avg_mrr`, `test_avg_mrr`)
+- deltas face a baselines: `random_baseline_delta`, `mastery_baseline_delta`, `uncertainty_baseline_delta`
+- `metacognition_rank_shift` (diferença de rank médio vs `no_metacognition`)
+- métricas longitudinais agregadas:
+  - `avg_learning_gain`, `avg_post_test_score`, `avg_mastery_gain`
+  - `avg_time_to_mastery`, `avg_bad_recommendations`, `prerequisite_violation_rate`
 - resultados por cenário com ranking completo (`top_recommendations`, `rank_of_first_expected`)
+- por cenário: `true_weak_concepts`, `average_rank_of_expected`, `learning_gain`, `post_test_score`, `mastery_gain`, `time_to_mastery`, `number_of_bad_recommendations`, `prerequisite_violation_rate`
 - diagnóstico por cenário:
   - `candidates_before_gate` / `candidates_after_gate` (hard-ready)
   - `candidates_ranked` / `candidates_excluded_min_readiness`
@@ -646,7 +699,7 @@ Por approach, devolve:
   - `top_candidates` com score/readiness/mastery/uncertainty
 - `best_approach_id` no relatório final
 - bloco `calibration`:
-  - em cenários canónicos, seleção no treino S1–S3 e leitura no teste S4–S6;
+  - em cenários canónicos, seleção no treino S1–S8 e leitura no teste S9–S12;
   - em cenários gerados (`G*`), split automático 70/30 (treino/teste) por ordem de cenário;
   - métrica de seleção: `train_pass_rate` (Hit@1) -> `train_avg_mrr` -> `hit_at_3_rate`.
 

@@ -30,8 +30,10 @@ Este e o documento tecnico canonico para arquitetura, logica OLM e decisoes de i
 - `src/hooks/useFileSystem.jsx`
 - Estado operacional de arvore/ficheiro/editor.
 - Persistencia de analytics e perfis via `rootDataStore`.
-- Ingestao automatica no OLM baseada em conceitos inline (`;;;conceito;;;`) e prerequisitos inline (`;;;conceito:prereq;;;`).
+- Ingestao automatica no OLM baseada em conceitos inline (`;;;conceito;;;`, `;;;conceito:prereq;;;`) com peso opcional por declaracao (`[0..1]`).
+- Quando nao existe marcacao inline valida, promove fallback por ficheiro (`<dominio>.file.<slug>`) para evitar eventos sem conceito.
 - Check-ins metacognitivos 1..4 por tempo, fim de teste e transicao de dominio.
+- Prompt metacognitivo in-app (nao bloqueante), com cooldown por trigger e cap por sessao.
 
 - `src/components/insights/KnowledgeLevels.jsx`
 - Visualizacao de dominio/root.
@@ -69,7 +71,7 @@ Este e o documento tecnico canonico para arquitetura, logica OLM e decisoes de i
 3. `useFileSystem.openFile` le conteudo.
 4. Atualiza analytics/perfis.
 5. Extrai conceitos inline (`;;;conceito;;;`) e prerequisitos (`;;;conceito:prereq;;;`).
-6. Faz upsert dos conceitos inline declarados e dos pré-requisitos inferidos, cria arestas prereq->target e atualiza `content_concepts` apenas para os conceitos declarados no ficheiro.
+6. Faz upsert dos conceitos inline declarados e dos pré-requisitos inferidos, cria arestas prereq->target e atualiza `content_concepts` apenas para os conceitos declarados no ficheiro (limpando mapeamentos antigos do mesmo `content_id` antes de remapear).
 7. Envia evento `review` ao OLM apenas com os conceitos inline declarados.
 
 ### 4.2 Guardar ficheiro
@@ -77,6 +79,7 @@ Este e o documento tecnico canonico para arquitetura, logica OLM e decisoes de i
 1. Editor grava via `write_file`.
 2. Atualiza catalogo de conceitos inline.
 3. Se ficheiro for `quiz-*` ou `teste-*`, pode disparar check-in meta 1..4.
+4. O check-in usa dialogo in-app com opcoes 1..4 e "Agora nao" (sem `window.prompt`).
 
 ### 4.3 Recomendacao unificada
 
@@ -89,9 +92,12 @@ Este e o documento tecnico canonico para arquitetura, logica OLM e decisoes de i
 - OLM e estado de app ja estao centralizados no root (`.projectl-data`).
 - `.projectl-data` esta oculto no filetree da app.
 - O backend e concept-first; item ranking depende da qualidade de `content_concepts`.
-- Ficheiro nao e promovido automaticamente a conceito; o sinal conceitual vem de marcacoes inline no conteudo.
+- Ficheiro e promovido automaticamente a conceito fallback quando nao existem marcacoes inline validas.
 - Eventos automaticos existem, mas a cobertura de eventos objetivos ainda e parcial.
 - Check-in metacognitivo 1..4 adiciona sinal subjetivo util, mas suscetivel a ruido.
+- Cooldown de metaprompt e diferenciado por trigger (`periodic`, `domain_switch`, `test_end`) e resposta de dismiss gera cooldown proprio.
+- Cursor de perguntas avanca apenas em resposta valida (nao avanca em dismiss).
+- Estado de prompting (`lastPromptAt`, `questionCursor`, `lastOutcome`) e persistido em `.projectl-data/app_state.json`.
 - Segmentacao de recomendacao por item agora usa `domain_id` explicito em `content_items`.
 - A incerteza por conceito usa formula de variancia Beta (`alpha*beta / ((alpha+beta)^2*(alpha+beta+1))`) no runtime OLM.
 - O peso de ingestao foi organizado em tres blocos equivalentes no runtime (`w_evidence`, `r_reliability`, `g_safety`) sem alterar o peso final aplicado.
@@ -100,7 +106,12 @@ Este e o documento tecnico canonico para arquitetura, logica OLM e decisoes de i
 - A criacao de arestas (`olm_add_edge`) rejeita ciclos no grafo de prerequisitos, alem de self-edges e IDs inexistentes.
 - A readiness usa ancestrais multi-hop no grafo com blend controlado por `readiness_blend_eta`: `R(c) = eta*R_min + (1-eta)*R_mean`, onde `R_min = min_{a in Ancestors(c)}(delta^d(a,c) * r_a)` e `R_mean` e a media desses mesmos termos, com `r_a = clamp(m_a - gamma*u_a, 0, 1)`.
 - O ranking e orientado por politica (`ranking_policy`): `learn_next` (lacuna de mastery), `review_next` (incerteza + decay + inconsistencia), `adaptive` (switch por `theta`) e `balanced` (formula classica com `ranking_lambda`).
+- O simulador inclui agora politicas adicionais para avaliacao: `random`, `mastery_only`, `uncertainty_only`, `curriculum_linear`, `no_root_penalty` e `no_mapping_penalty`, alem das variacoes com/sem gating e com/sem metacognicao.
 - Modelo de estado com decay in-place: `concept_state.alpha/beta` guardam estado efetivo em `last_update`; antes de ler ou atualizar um conceito, o backend aplica decay de `last_update -> now`, e no update persiste `last_update = now`.
+- Em `ingest_into_store`, quando `event.timestamp` e RFC3339 valido, esse instante passa a ser usado como `last_update`, permitindo testes sinteticos de decay com datas historicas.
+- A simulacao sintetica deixou de derivar `expected_any` dos eventos observados: cada cenario usa `true_mastery` escondida por conceito e define alvos esperados a partir dessa verdade latente.
+- O modo canónico foi expandido para S1-S12 e a calibracao passa a usar treino S1-S8 e teste S9-S12.
+- O relatório de simulacao passou a incluir metricas longitudinais agregadas (`avg_learning_gain`, `avg_post_test_score`, `avg_mastery_gain`, `avg_time_to_mastery`, `avg_bad_recommendations`, `prerequisite_violation_rate`) e deltas vs baselines triviais.
 
 ## 6. Riscos tecnicos e pontos de atencao (importante para resolver)
 
@@ -109,7 +120,7 @@ Este e o documento tecnico canonico para arquitetura, logica OLM e decisoes de i
 
 - Qualidade de mapeamento item-conceito insuficiente.
 - Impacto: recomendacao de item perde precisao.
-- Mitigacao implementada: penalizacao por qualidade de mapeamento no backend e visibilidade de `mapping_penalty`/`mapping_quality` na UI de dominio.
+- Mitigacao implementada: penalizacao por qualidade de mapeamento no backend (incluindo ingestao por `content_id`) e visibilidade de `mapping_penalty`/`mapping_quality` na UI de dominio.
 
 - Dependencia de convencoes de prefixo para dominio.
 - Impacto: erros silenciosos de filtro/ranking.

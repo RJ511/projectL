@@ -37,8 +37,12 @@ Este ficheiro é a referência rápida para **implementar, alterar ou explicar**
 - `src/hooks/useFileSystem.jsx`
   - Estado da árvore, ficheiro selecionado, abrir/guardar/criar/renomear.
   - Perfis por nó (conceito/dificuldade/domínio).
-  - Parsing de conceitos inline no editor via marcação `;;;conceito;;;` e pré-requisitos via `;;;conceito:prereq;;;` (múltiplos: `;;;conceito:pr1,pr2;;;`).
-  - Eventos automáticos OLM (ex.: `review` ao abrir) apenas com conceitos inline encontrados no ficheiro.
+  - Parsing de conceitos inline no editor via marcação `;;;conceito;;;` e pré-requisitos via `;;;conceito:prereq;;;` (múltiplos: `;;;conceito:pr1,pr2;;;`) com peso opcional por conceito (`[0..1]`).
+  - Eventos automáticos OLM (ex.: `review` ao abrir) com conceitos inline declarados; sem marcação inline, usa conceito fallback por ficheiro (`<dominio>.file.<slug>`).
+  - Limpeza de mapeamentos antigos `content_concepts` por `content_id` antes de remapear conceitos atuais.
+  - Check-ins metacognitivos usam dialogo in-app (nao `window.prompt`) com escala discreta 1..4.
+  - Cooldown metacognitivo por trigger + cooldown de dismiss + cap de prompts por sessao.
+  - Estado de prompting metacognitivo persistido em `metaPromptState.v1` no root data store.
   - Telemetria de uso (`learningAnalytics`): tempo por ficheiro/domínio/sessão, aberturas, etc.
   - Persistência de perfis, analytics e catálogo de conceitos inline (`inlineConceptCatalog.v1`) via `rootDataStore` no root do projeto.
 
@@ -100,7 +104,7 @@ Este ficheiro é a referência rápida para **implementar, alterar ou explicar**
 
 Regra atual: `conceptId` é sempre namespaced por domínio e pode incluir sub-domínios por pontos (ex.: `mathematics.calculus.calculo-1`).
 
-Também é possível declarar conceitos inline no conteúdo com `;;;conceito;;;` e pré-requisitos com `;;;conceito:prereq;;;`; esses conceitos são normalizados para IDs namespaced (`<domain>.inline.<slug>`), com arestas `prereq -> conceito`, e usados no evento automático ao abrir ficheiro.
+Também é possível declarar conceitos inline no conteúdo com `;;;conceito;;;` e pré-requisitos com `;;;conceito:prereq;;;`; esses conceitos são normalizados para IDs namespaced (`<domain>.inline.<slug>`), com arestas `prereq -> conceito`, e usados no evento automático ao abrir ficheiro. Declarações aceitam peso opcional por conceito (`;;;conceito [0.7];;;`).
 
 ### O que influencia um concept
 
@@ -123,6 +127,7 @@ Também é possível declarar conceitos inline no conteúdo com `;;;conceito;;;`
 - Ingestão automática de evento: `trackOlmEvent(eventType, node, payload)` em `useFileSystem.jsx`.
 - Abrir ficheiro (`openFile`) gera evento leve de revisão (`review`).
 - Guardar ficheiro (`saveFile`) **não** gera evento de prática.
+- Guardar ficheiro `quiz-*`/`teste-*` pode abrir check-in metacognitivo `test_end` (resposta 1..4) e ingerir `self_assessment`.
 - Perfis e analytics são persistidos em `.projectl-data/app_state.json`.
 - Sessão/tempo:
   - `startActiveFileTimer`
@@ -137,6 +142,7 @@ Também é possível declarar conceitos inline no conteúdo com `;;;conceito;;;`
 - Limitadores fortes por evento: `limiter_for_event`.
 - Update principal: `ingest_into_store`.
 - `ingest_into_store` filtra conceitos inexistentes antes de persistir o evento, renormaliza pesos válidos e devolve `IngestResult { updated_concepts, duplicate }`.
+- Quando o evento mapeia por `content_id` (sem `concept_ids` explícitos), `ingest_into_store` aplica `mapping_quality.penalty` no bloco `w_evidence`.
 - `olm_add_edge` aplica validação anti-ciclo antes de adicionar `prereq -> target`.
 - Ranking: `rank_next_to_study`.
 
@@ -150,7 +156,7 @@ Também é possível declarar conceitos inline no conteúdo com `;;;conceito;;;`
 Definidos em `olm.rs`, registados em `src-tauri/src/main.rs`:
 
 - Conceitos/grafo: `olm_upsert_concept`, `olm_list_concepts`, `olm_add_edge` (self-edge/cycle safe), `olm_list_edges`
-- Conteúdo/mapa: `olm_upsert_content_item`, `olm_map_content_concept`
+- Conteúdo/mapa: `olm_upsert_content_item`, `olm_map_content_concept`, `olm_remove_content_concept_maps`
 - Eventos/estado: `olm_ingest_event` (retorna `updated_concepts` + `duplicate`), `olm_get_state`, `olm_get_explain`, `olm_next_to_study`, `olm_next_content_to_study`
 - Config/persistência: `olm_get_config`, `olm_set_config`, `olm_reset_state`, `olm_export_json`, `olm_import_json`, `olm_save_state`, `olm_load_state`
 - Diagnóstico/métricas: `olm_get_debug_ranking`, `olm_get_content_metrics`
@@ -174,7 +180,7 @@ Nem toda a lógica operacional está no `OLM_LOGIC_MAP.md`. Itens hoje implement
 - Alterar hierarquia Root/Domain/Item e renderização: `Main.jsx` + `Sidebar.jsx` + `KnowledgeLevels.jsx`.
 - Alterar contratos frontend↔backend: `src/services/olm.service.jsx` e `src-tauri/src/main.rs`.
 - Alterar política de dados local no root: `src/services/rootDataStore.js`, `src/services/dataPolicy.js`, `src-tauri/src/commands/tree.rs`.
-- Ajustar calibração sintética de `meta_strength`: `scripts/calibrate-meta-strength.mjs` + `src-tauri/src/bin/olm_sim.rs`.
+- Ajustar calibração sintética, baselines e cenários: `scripts/calibrate-meta-strength.mjs` + `src-tauri/src/bin/olm_sim.rs` + `src-tauri/src/commands/olm.rs` (`approach_definitions`, `baseline_scenario_blueprints`, `generated_scenario_blueprints`).
 
 ## 8) Estado conhecido e manutenção
 

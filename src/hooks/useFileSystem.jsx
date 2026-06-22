@@ -12,6 +12,7 @@ import {
   addEdge,
   ingestEvent,
   mapContentConcept,
+  removeContentConceptMaps,
   upsertConcept,
   upsertContentItem,
 } from "../services/olm.service";
@@ -20,18 +21,30 @@ import {
   getRootStateValue,
   setRootStateValue,
 } from "../services/rootDataStore";
+import {
+  buildFallbackInlineConcept,
+  extractInlineConceptGraph,
+} from "./inlineConcepts";
+import {
+  MAX_META_PROMPTS_PER_SESSION,
+  nextQuestionCursor,
+  resolveMetaTrigger,
+  shouldThrottleMetaPrompt,
+} from "./metaPromptPolicy";
 
 const NODE_LEARNING_PROFILES_KEY = "nodeLearningProfiles.v1";
 const LEARNING_ANALYTICS_KEY = "learningAnalytics.v1";
 const INLINE_CONCEPT_CATALOG_KEY = "inlineConceptCatalog.v1";
-const INLINE_CONCEPT_REGEX = /(;{2,3})\s*([^;\n][^;\n]{0,160}?)\s*\1/g;
+const META_PROMPT_STATE_KEY = "metaPromptState.v1";
 const META_MIN_SESSION_SEC = 12 * 60;
-const META_COOLDOWN_MS = 5 * 60 * 1000;
 const META_QUESTIONS = [
-  "Como te sentiste nesta fase de estudo? (1=muito mal/dificil, 4=muito bem/facil)",
-  "Sentes que aprendeste algo util agora? (1=quase nada, 4=aprendi muito)",
-  "Quao facil foi manter foco e clareza? (1=muito dificil, 4=muito facil)",
-  "Como avaliarias o teu progresso neste momento? (1=fraco, 4=forte)",
+  "Quão confiante estás de que consegues explicar ou aplicar o que estudaste sem ajuda?",
+  "Quão bem achas que dominaste o conteúdo trabalhado nesta sessão?",
+  "Quão difícil foi o conteúdo ou a tarefa para ti?",
+  "Quanto esforço mental investiste para compreender ou resolver isto?",
+  "Quão bem conseguiste manter o foco, sem te perderes ou distraíres?",
+  "A estratégia que usaste para estudar ou resolver isto foi adequada?",
+  "Quão frustrante foi esta sessão?",
 ];
 
 function slugify(value) {
@@ -114,99 +127,6 @@ function defaultDifficulty(kind) {
   if (kind === "domain") return 0.6;
   if (kind === "folder") return 0.55;
   return 0.5;
-}
-
-function parseInlineConceptToken(rawToken = "") {
-  const token = String(rawToken || "").trim();
-  if (!token) return null;
-
-  const [rawConceptLabel, ...rawRequiresParts] = token.split(":");
-  const conceptLabel = String(rawConceptLabel || "").trim();
-  if (!conceptLabel) return null;
-
-  const prereqLabels = rawRequiresParts
-    .join(":")
-    .split(",")
-    .map((item) => item.trim())
-    .filter(Boolean);
-
-  return {
-    conceptLabel,
-    prereqLabels,
-  };
-}
-
-function extractInlineConceptGraph(content, domainId) {
-  const text = String(content || "");
-  if (!text) {
-    return {
-      concepts: [],
-      edges: [],
-      conceptIds: [],
-    };
-  }
-
-  const byId = new Map();
-  const declaredConceptIds = new Set();
-  const edgeKeySet = new Set();
-  const edges = [];
-
-  for (const match of text.matchAll(INLINE_CONCEPT_REGEX)) {
-    const token = parseInlineConceptToken(match?.[2] || "");
-    if (!token) continue;
-
-    const conceptId = normalizeConceptId(
-      `inline.${token.conceptLabel}`,
-      domainId,
-    );
-    if (!conceptId) continue;
-    declaredConceptIds.add(conceptId);
-
-    const requires = byId.get(conceptId)?.requires || new Set();
-
-    for (const prereqLabel of token.prereqLabels) {
-      const prereqId = normalizeConceptId(`inline.${prereqLabel}`, domainId);
-      if (!prereqId || prereqId === conceptId) continue;
-      requires.add(prereqId);
-
-      if (!byId.has(prereqId)) {
-        byId.set(prereqId, {
-          id: prereqId,
-          name: prereqLabel,
-          description: `Conceito pré-requisito inferido de marcação ;;;${token.conceptLabel}:${prereqLabel};;;`,
-          requires: new Set(),
-        });
-      }
-
-      const edgeKey = `${prereqId}=>${conceptId}`;
-      if (!edgeKeySet.has(edgeKey)) {
-        edgeKeySet.add(edgeKey);
-        edges.push({ prereq_id: prereqId, target_id: conceptId });
-      }
-    }
-
-    byId.set(conceptId, {
-      id: conceptId,
-      name: token.conceptLabel,
-      description: `Conceito inline extraído de marcação ;;;${token.conceptLabel};;;`,
-      requires,
-    });
-  }
-
-  const concepts = Array.from(byId.values()).map((concept) => ({
-    id: concept.id,
-    name: concept.name,
-    description: concept.description,
-    requires: Array.from(concept.requires).sort((a, b) => a.localeCompare(b)),
-  }));
-
-  const conceptIds = Array.from(declaredConceptIds);
-
-  return {
-    concepts,
-    edges,
-    conceptIds,
-  };
 }
 
 function buildDefaultProfile(node) {
@@ -319,6 +239,110 @@ function safeAnalytics(raw) {
   };
 }
 
+function openMetaReflectionDialog({ triggerLabel, scope, question }) {
+  return new Promise((resolve) => {
+    const overlay = document.createElement("div");
+    const card = document.createElement("div");
+    const title = document.createElement("div");
+    const subtitle = document.createElement("div");
+    const questionEl = document.createElement("div");
+    const actions = document.createElement("div");
+    const dismissBtn = document.createElement("button");
+
+    overlay.style.position = "fixed";
+    overlay.style.inset = "0";
+    overlay.style.background = "rgba(15, 23, 42, 0.35)";
+    overlay.style.display = "flex";
+    overlay.style.alignItems = "center";
+    overlay.style.justifyContent = "center";
+    overlay.style.zIndex = "99999";
+
+    card.style.width = "min(540px, calc(100vw - 32px))";
+    card.style.background = "#ffffff";
+    card.style.border = "1px solid #cbd5e1";
+    card.style.borderRadius = "12px";
+    card.style.boxShadow = "0 18px 40px rgba(15, 23, 42, 0.28)";
+    card.style.padding = "14px";
+    card.style.display = "grid";
+    card.style.gap = "10px";
+
+    title.textContent = `[Meta] ${triggerLabel}`;
+    title.style.fontWeight = "700";
+    title.style.fontSize = "14px";
+    title.style.color = "#0f172a";
+
+    subtitle.textContent = scope;
+    subtitle.style.fontSize = "12px";
+    subtitle.style.color = "#475569";
+
+    questionEl.textContent = question;
+    questionEl.style.fontSize = "13px";
+    questionEl.style.lineHeight = "1.4";
+    questionEl.style.color = "#1e293b";
+
+    actions.style.display = "grid";
+    actions.style.gridTemplateColumns = "repeat(4, minmax(0, 1fr))";
+    actions.style.gap = "8px";
+
+    const cleanup = () => {
+      overlay.remove();
+      window.removeEventListener("keydown", onKeydown);
+    };
+
+    const closeWith = (value) => {
+      cleanup();
+      resolve(value);
+    };
+
+    const onKeydown = (event) => {
+      if (event.key === "Escape") {
+        closeWith(null);
+      }
+    };
+
+    for (const rating of [1, 2, 3, 4]) {
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.textContent = String(rating);
+      btn.style.padding = "8px 0";
+      btn.style.border = "1px solid #cbd5e1";
+      btn.style.borderRadius = "8px";
+      btn.style.background = "#f8fbff";
+      btn.style.fontWeight = "700";
+      btn.style.cursor = "pointer";
+      btn.onclick = () => closeWith(rating);
+      actions.appendChild(btn);
+    }
+
+    dismissBtn.type = "button";
+    dismissBtn.textContent = "Agora não";
+    dismissBtn.style.marginTop = "2px";
+    dismissBtn.style.padding = "8px 10px";
+    dismissBtn.style.border = "1px solid #cbd5e1";
+    dismissBtn.style.borderRadius = "8px";
+    dismissBtn.style.background = "#ffffff";
+    dismissBtn.style.color = "#334155";
+    dismissBtn.style.cursor = "pointer";
+    dismissBtn.onclick = () => closeWith(null);
+
+    overlay.onclick = (event) => {
+      if (event.target === overlay) {
+        closeWith(null);
+      }
+    };
+
+    card.appendChild(title);
+    card.appendChild(subtitle);
+    card.appendChild(questionEl);
+    card.appendChild(actions);
+    card.appendChild(dismissBtn);
+    overlay.appendChild(card);
+
+    window.addEventListener("keydown", onKeydown);
+    document.body.appendChild(overlay);
+  });
+}
+
 export function useFileSystem(rootPath) {
   const [tree, setTree] = useState([]);
   const [selectedFile, setSelectedFile] = useState(null);
@@ -332,8 +356,11 @@ export function useFileSystem(rootPath) {
   const sessionStartRef = useRef(Date.now());
   const activeFileRef = useRef({ path: null, domain: null, startedAt: 0 });
   const sessionMetaPromptedRef = useRef(false);
+  const promptsThisSessionRef = useRef(0);
   const lastMetaPromptAtRef = useRef(0);
+  const lastMetaOutcomeRef = useRef("answered");
   const questionCursorRef = useRef(0);
+  const metaPromptInFlightRef = useRef(false);
 
   useEffect(() => {
     let mounted = true;
@@ -345,10 +372,17 @@ export function useFileSystem(rootPath) {
         return;
       }
 
-      const [profilesRaw, analyticsRaw] = await Promise.all([
-        getRootStateValue(rootPath, NODE_LEARNING_PROFILES_KEY, {}),
-        getRootStateValue(rootPath, LEARNING_ANALYTICS_KEY, defaultAnalytics()),
-      ]);
+      const [profilesRaw, analyticsRaw, metaPromptStateRaw] = await Promise.all(
+        [
+          getRootStateValue(rootPath, NODE_LEARNING_PROFILES_KEY, {}),
+          getRootStateValue(
+            rootPath,
+            LEARNING_ANALYTICS_KEY,
+            defaultAnalytics(),
+          ),
+          getRootStateValue(rootPath, META_PROMPT_STATE_KEY, {}),
+        ],
+      );
 
       if (!mounted) return;
       setNodeProfiles(
@@ -359,6 +393,25 @@ export function useFileSystem(rootPath) {
           ? safeAnalytics(JSON.stringify(analyticsRaw))
           : defaultAnalytics(),
       );
+
+      const hydratedState =
+        metaPromptStateRaw && typeof metaPromptStateRaw === "object"
+          ? metaPromptStateRaw
+          : {};
+
+      const hydratedLastPromptAt = Number(hydratedState.lastPromptAt ?? 0);
+      const hydratedQuestionCursor = Number(hydratedState.questionCursor ?? 0);
+      const hydratedLastOutcome = String(
+        hydratedState.lastOutcome || "answered",
+      );
+
+      lastMetaPromptAtRef.current = Number.isFinite(hydratedLastPromptAt)
+        ? hydratedLastPromptAt
+        : 0;
+      questionCursorRef.current = Number.isFinite(hydratedQuestionCursor)
+        ? Math.max(0, Math.floor(hydratedQuestionCursor))
+        : 0;
+      lastMetaOutcomeRef.current = hydratedLastOutcome;
     }
 
     loadRootState();
@@ -399,12 +452,18 @@ export function useFileSystem(rootPath) {
     return "Check-in periodico";
   }
 
-  function parseMetaAnswer(rawAnswer) {
-    const value = Number(rawAnswer);
-    if (!Number.isInteger(value) || value < 1 || value > 4) {
-      return null;
-    }
-    return value;
+  async function persistMetaPromptState(patch = {}) {
+    if (!rootPath) return;
+    const current = await getRootStateValue(
+      rootPath,
+      META_PROMPT_STATE_KEY,
+      {},
+    );
+    const next = {
+      ...(current && typeof current === "object" ? current : {}),
+      ...patch,
+    };
+    await setRootStateValue(rootPath, META_PROMPT_STATE_KEY, next);
   }
 
   async function askMetaReflection({
@@ -413,30 +472,57 @@ export function useFileSystem(rootPath) {
     contentId = "",
     force = false,
   } = {}) {
-    if (!rootPath) return null;
+    if (!rootPath || metaPromptInFlightRef.current) return null;
+
+    const safeTrigger = resolveMetaTrigger(trigger);
     const now = Date.now();
-    if (!force && now - lastMetaPromptAtRef.current < META_COOLDOWN_MS) {
+    if (promptsThisSessionRef.current >= MAX_META_PROMPTS_PER_SESSION) {
+      return null;
+    }
+
+    const throttled = shouldThrottleMetaPrompt({
+      now,
+      lastPromptAt: lastMetaPromptAtRef.current,
+      lastOutcome: lastMetaOutcomeRef.current,
+      trigger: safeTrigger,
+      force,
+    });
+    if (throttled) {
       return null;
     }
 
     const question =
       META_QUESTIONS[questionCursorRef.current % META_QUESTIONS.length];
-    questionCursorRef.current += 1;
 
     const scope = domain ? `Dominio: ${domain}` : "Dominio: geral";
-    const triggerLabel = buildMetaPromptLabel(trigger);
-    const response = window.prompt(
-      `[Meta] ${triggerLabel}\n${scope}\n\n${question}\n\nResponde apenas com 1, 2, 3 ou 4.`,
-      "3",
-    );
+    const triggerLabel = buildMetaPromptLabel(safeTrigger);
 
-    if (response == null) return null;
+    metaPromptInFlightRef.current = true;
+    const answer = await openMetaReflectionDialog({
+      triggerLabel,
+      scope,
+      question,
+    });
+    metaPromptInFlightRef.current = false;
 
-    const rating = parseMetaAnswer(response.trim());
-    if (!rating) {
-      alert("Resposta invalida. Usa um numero inteiro de 1 a 4.");
+    if (!Number.isInteger(answer) || answer < 1 || answer > 4) {
+      lastMetaPromptAtRef.current = Date.now();
+      lastMetaOutcomeRef.current = "dismissed";
+      await persistMetaPromptState({
+        lastPromptAt: lastMetaPromptAtRef.current,
+        lastOutcome: lastMetaOutcomeRef.current,
+        lastTrigger: safeTrigger,
+        questionCursor: questionCursorRef.current,
+      });
       return null;
     }
+
+    const rating = answer;
+    questionCursorRef.current = nextQuestionCursor({
+      currentCursor: questionCursorRef.current,
+      hasValidAnswer: true,
+      questionCount: META_QUESTIONS.length,
+    });
 
     const eventDate = new Date();
     const safeDomain = slugify(domain || "root") || "root";
@@ -474,7 +560,7 @@ export function useFileSystem(rootPath) {
           score: score01,
           confidence: Math.max(0.25, Math.min(1, rating / 4)),
           meta_reflection_rating: rating,
-          meta_trigger: trigger || "periodic",
+          meta_trigger: safeTrigger,
           file_path: effectiveContentId,
         },
       });
@@ -486,7 +572,7 @@ export function useFileSystem(rootPath) {
           domain: domain || "",
           file: effectiveContentId,
           eventType: "self_assessment",
-          trigger: trigger || "periodic",
+          trigger: safeTrigger,
           rating,
           confidence: Math.max(0.25, Math.min(1, rating / 4)),
         });
@@ -502,6 +588,18 @@ export function useFileSystem(rootPath) {
       });
 
       lastMetaPromptAtRef.current = Date.now();
+      lastMetaOutcomeRef.current = "answered";
+      promptsThisSessionRef.current += 1;
+      sessionMetaPromptedRef.current =
+        promptsThisSessionRef.current >= MAX_META_PROMPTS_PER_SESSION;
+
+      await persistMetaPromptState({
+        lastPromptAt: lastMetaPromptAtRef.current,
+        lastOutcome: lastMetaOutcomeRef.current,
+        lastTrigger: safeTrigger,
+        questionCursor: questionCursorRef.current,
+      });
+
       return rating;
     } catch (err) {
       console.warn("Meta reflection ingest skipped:", err);
@@ -516,7 +614,7 @@ export function useFileSystem(rootPath) {
     await askMetaReflection({
       trigger: "domain_switch",
       domain: from,
-      force: true,
+      force: false,
     });
   }
 
@@ -562,7 +660,7 @@ export function useFileSystem(rootPath) {
     };
   }
 
-  function closeSessionWindow() {
+  function closeSessionWindow({ allowPrompt = true } = {}) {
     closeActiveFileTimer();
     const startedAt = sessionStartRef.current;
     const endedAt = Date.now();
@@ -587,6 +685,7 @@ export function useFileSystem(rootPath) {
     });
 
     if (
+      allowPrompt &&
       durationSec >= META_MIN_SESSION_SEC &&
       !sessionMetaPromptedRef.current
     ) {
@@ -597,26 +696,23 @@ export function useFileSystem(rootPath) {
       askMetaReflection({
         trigger: "periodic",
         domain: domainHint,
-      }).then((rating) => {
-        if (rating != null) {
-          sessionMetaPromptedRef.current = true;
-        }
       });
     }
 
     sessionStartRef.current = Date.now();
     sessionMetaPromptedRef.current = false;
+    promptsThisSessionRef.current = 0;
   }
 
   useEffect(() => {
     const onBeforeUnload = () => {
-      closeSessionWindow();
+      closeSessionWindow({ allowPrompt: false });
     };
 
     window.addEventListener("beforeunload", onBeforeUnload);
     return () => {
       window.removeEventListener("beforeunload", onBeforeUnload);
-      closeSessionWindow();
+      closeSessionWindow({ allowPrompt: false });
     };
   }, []);
 
@@ -624,6 +720,7 @@ export function useFileSystem(rootPath) {
     const intervalId = window.setInterval(() => {
       if (document.hidden) return;
       if (sessionMetaPromptedRef.current) return;
+      if (promptsThisSessionRef.current >= MAX_META_PROMPTS_PER_SESSION) return;
 
       const elapsedSec = Math.max(
         0,
@@ -639,10 +736,6 @@ export function useFileSystem(rootPath) {
       askMetaReflection({
         trigger: "periodic",
         domain: domainHint,
-      }).then((rating) => {
-        if (rating != null) {
-          sessionMetaPromptedRef.current = true;
-        }
       });
     }, 60000);
 
@@ -793,8 +886,31 @@ export function useFileSystem(rootPath) {
     const contentId = normalize(node.path);
     const graph = extractInlineConceptGraph(editorContent, profile.domainId);
 
+    // Fix 2: File-level fallback concept — every opened file contributes evidence
     if (!graph.concepts.length) {
-      return { profile, contentId, conceptIds: [] };
+      const fallbackConcept = buildFallbackInlineConcept(
+        node.name,
+        profile.domainId,
+      );
+      await upsertConcept({
+        id: fallbackConcept.id,
+        name: fallbackConcept.name,
+        description: fallbackConcept.description,
+      });
+      await upsertContentItem({
+        id: contentId,
+        item_type: "note",
+        title: node.name,
+        domain_id: profile.domainId,
+      });
+      // Fix 3: Clear stale mappings before writing the fallback
+      await removeContentConceptMaps(contentId);
+      await mapContentConcept({
+        content_id: contentId,
+        concept_id: fallbackConcept.id,
+        coverage_weight: fallbackConcept.coverageWeight,
+      });
+      return { profile, contentId, conceptIds: [fallbackConcept.id] };
     }
 
     for (const concept of graph.concepts) {
@@ -816,6 +932,10 @@ export function useFileSystem(rootPath) {
       domain_id: profile.domainId,
     });
 
+    // Fix 3: Remove stale mappings before re-mapping current concepts
+    await removeContentConceptMaps(contentId);
+
+    // Fix 1: Use per-concept coverageWeight from declaration syntax
     const declaredConceptSet = new Set(graph.conceptIds || []);
     for (const concept of graph.concepts) {
       if (!declaredConceptSet.has(concept.id)) {
@@ -824,7 +944,7 @@ export function useFileSystem(rootPath) {
       await mapContentConcept({
         content_id: contentId,
         concept_id: concept.id,
-        coverage_weight: 1.0,
+        coverage_weight: concept.coverageWeight ?? 1.0,
       });
     }
 

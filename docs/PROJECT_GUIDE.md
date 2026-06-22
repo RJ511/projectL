@@ -94,6 +94,12 @@ Esses conceitos são normalizados para IDs namespaced por domínio (`<dominio>.i
 
 Quando usas `;;;conceito:prereq;;;`, o `prereq` também é criado/atualizado como conceito inline (se ainda não existir), para a aresta ser válida no OLM.
 
+Check-ins metacognitivos (self-assessment):
+
+- A app pode abrir um diálogo in-app 1..4 em três triggers: `periodic`, `test_end` e `domain_switch`.
+- O diálogo é não bloqueante (sem `window.prompt`) e inclui opção de adiar (`Agora não`).
+- Existe cooldown por trigger e cooldown próprio para dismiss, além de cap de prompts por sessão.
+
 ## 6) Validação rápida
 
 ### Frontend build
@@ -126,6 +132,27 @@ Parâmetros opcionais:
 
 - `node scripts/calibrate-meta-strength.mjs --start 0 --end 29`
 - `node scripts/calibrate-meta-strength.mjs --start 10 --end 59 --out-dir docs/reports`
+
+### Avaliação sintética final (tese)
+
+```bash
+cd src-tauri
+
+# canónicos (S1-S12)
+cargo run --bin olm_sim -- --scenario-mode canonical --json -o canonical.json
+
+# multi-seed balanced
+cargo run --bin olm_sim -- --profile balanced --seeds 50 -o balanced_multi.json
+
+# multi-seed stress
+cargo run --bin olm_sim -- --profile stress --seeds 50 -o stress_multi.json
+
+# gerados em volume
+cargo run --bin olm_sim -- --scenario-mode generated --generated-scenarios 100 --seeds 50 -o generated_multi.json
+
+# opcional: stress mais robusto
+cargo run --bin olm_sim -- --profile stress --seeds 100 -o stress_100seeds.json
+```
 
 ### Backend Rust check
 

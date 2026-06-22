@@ -2,6 +2,7 @@
 
 use chrono::{DateTime, Utc};
 use rand::rngs::StdRng;
+use rand::seq::SliceRandom;
 use rand::{Rng, SeedableRng};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -50,6 +51,15 @@ pub struct OlmConfig {
     pub exclude_concepts: Vec<String>,
     pub decay_enabled: bool,
     pub decay_half_life_days: f64,
+    /// Simulated reference time for decay during synthetic scenario evaluation.
+    /// When `Some`, overrides `Utc::now()` in `decay_state_if_needed`.
+    /// Never serialised — runtime-only field used by the simulation pipeline.
+    #[serde(skip)]
+    pub simulated_now: Option<DateTime<Utc>>,
+    /// Seed used when ranking_policy == "random" to produce a reproducible shuffle
+    /// per (scenario, seed) pair instead of a hash-based deterministic order.
+    #[serde(skip)]
+    pub ranking_seed: Option<u64>,
 }
 
 impl Default for OlmConfig {
@@ -71,6 +81,8 @@ impl Default for OlmConfig {
             exclude_concepts: vec![],
             decay_enabled: false,
             decay_half_life_days: 30.0,
+            simulated_now: None,
+            ranking_seed: None,
         }
     }
 }
@@ -253,6 +265,9 @@ struct ApproachConfig {
     meta_strength: f64,
     soft_gate_k: Option<f64>,
     stop_mastery: f64,
+    decay_enabled: bool,
+    decay_half_life_days: f64,
+    apply_mapping_penalty: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -264,6 +279,15 @@ pub struct SimulationOptions {
     pub depth: usize,
     pub mapping_quality: f64,
     pub scenario_mode: String,
+    /// Custom approach configs run in the same scenarios as the built-in three.
+    #[serde(default)]
+    pub custom_approaches: Vec<CustomApproachConfig>,
+    /// When true, skip built-in approaches and run only custom_approaches.
+    #[serde(default)]
+    pub custom_approaches_only: bool,
+    /// Max items per scenario full_ranking.  0 = include all ranked concepts.
+    #[serde(default)]
+    pub top_n: usize,
 }
 
 impl Default for SimulationOptions {
@@ -276,8 +300,33 @@ impl Default for SimulationOptions {
             depth: 3,
             mapping_quality: 0.8,
             scenario_mode: "mixed".to_string(),
+            custom_approaches: vec![],
+            custom_approaches_only: false,
+            top_n: 0,
         }
     }
+}
+
+/// Approach config that can be supplied at runtime (CLI / JSON).
+/// All numeric fields are optional; unset fields fall back to the built-in
+/// `base` config (default: "baseline").
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CustomApproachConfig {
+    pub id: String,
+    pub name: String,
+    pub description: Option<String>,
+    /// Built-in base to inherit defaults from: "baseline" | "metacog_balanced" | "metacog_strict".
+    pub base: Option<String>,
+    pub lambda: Option<f64>,
+    pub readiness_threshold: Option<f64>,
+    pub min_readiness: Option<f64>,
+    pub readiness_gamma: Option<f64>,
+    pub readiness_distance_delta: Option<f64>,
+    pub ranking_policy: Option<String>,
+    pub root_penalty: Option<f64>,
+    pub meta_strength: Option<f64>,
+    pub soft_gate_k: Option<f64>,
+    pub stop_mastery: Option<f64>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -301,6 +350,7 @@ struct ScenarioBlueprint {
     id: String,
     name: String,
     expected_any: Vec<String>,
+    true_mastery: HashMap<String, f64>,
     concepts: Vec<String>,
     edges: Vec<(String, String)>,
     content_items: Vec<ContentItem>,
@@ -314,6 +364,7 @@ pub struct SimulationScenarioResult {
     pub scenario_id: String,
     pub scenario_name: String,
     pub expected_any: Vec<String>,
+    pub true_weak_concepts: Vec<String>,
     pub scenario_metadata: ScenarioMetadata,
     pub top_recommendation: Option<String>,
     pub top_recommendations: Vec<String>,
@@ -325,7 +376,18 @@ pub struct SimulationScenarioResult {
     pub avg_mastery: f64,
     pub avg_uncertainty: f64,
     pub diagnostics: ScenarioDiagnostics,
+    pub average_rank_of_expected: f64,
+    pub learning_gain: f64,
+    pub post_test_score: f64,
+    pub mastery_gain: f64,
+    pub time_to_mastery: Option<usize>,
+    pub number_of_bad_recommendations: usize,
+    pub prerequisite_violation_rate: f64,
     pub notes: String,
+    /// Complete ranked list with full score decompositions for every concept.
+    pub full_ranking: Vec<NextToStudyItem>,
+    /// State of every concept after all events were ingested.
+    pub concept_states: Vec<ConceptStateView>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -333,15 +395,37 @@ pub struct SimulationApproachResult {
     pub approach_id: String,
     pub approach_name: String,
     pub description: String,
+    pub hit_at_1_rate: f64,
     pub pass_rate: f64,
     pub hit_at_3_rate: f64,
     pub avg_mrr: f64,
     pub avg_ndcg_at_3: f64,
+    pub average_rank_of_expected: f64,
     pub train_pass_rate: f64,
     pub test_pass_rate: f64,
     pub train_avg_mrr: f64,
     pub test_avg_mrr: f64,
+    pub random_baseline_delta: f64,
+    pub mastery_baseline_delta: f64,
+    pub uncertainty_baseline_delta: f64,
+    pub metacognition_rank_shift: f64,
+    pub avg_learning_gain: f64,
+    pub avg_post_test_score: f64,
+    pub avg_mastery_gain: f64,
+    pub avg_time_to_mastery: Option<f64>,
+    pub avg_bad_recommendations: f64,
+    pub prerequisite_violation_rate: f64,
     pub scenarios: Vec<SimulationScenarioResult>,
+}
+
+#[derive(Debug, Clone)]
+struct LongitudinalMetrics {
+    learning_gain: f64,
+    post_test_score: f64,
+    mastery_gain: f64,
+    time_to_mastery: Option<usize>,
+    number_of_bad_recommendations: usize,
+    prerequisite_violation_rate: f64,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -353,6 +437,40 @@ pub struct ScenarioDiagnostics {
     pub readiness_distribution: Vec<f64>,
     pub concept_event_counts: HashMap<String, usize>,
     pub top_candidates: Vec<NextToStudyItem>,
+}
+
+/// Metrics for a single concept under one approach in a scenario.
+#[derive(Debug, Clone, Serialize)]
+pub struct ConceptApproachSlice {
+    pub approach_id: String,
+    /// 1-based rank in the full ranking; None if excluded before ranking.
+    pub rank: Option<usize>,
+    pub score: f64,
+    pub mastery: f64,
+    pub uncertainty: f64,
+    pub readiness: f64,
+    pub gate_factor: f64,
+    pub gap: f64,
+    pub decay_signal: f64,
+    pub inconsistency: f64,
+    pub policy_used: String,
+}
+
+/// Cross-approach view for one concept inside a scenario.
+#[derive(Debug, Clone, Serialize)]
+pub struct ConceptCrossApproachRow {
+    pub concept_id: String,
+    pub name: String,
+    pub slices: Vec<ConceptApproachSlice>,
+}
+
+/// Full cross-approach comparison for a single scenario.
+#[derive(Debug, Clone, Serialize)]
+pub struct ScenarioApproachComparison {
+    pub scenario_id: String,
+    pub scenario_name: String,
+    /// One row per concept, sorted by concept_id.
+    pub concepts: Vec<ConceptCrossApproachRow>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -372,6 +490,8 @@ pub struct SimulationReport {
     pub approaches: Vec<SimulationApproachResult>,
     pub best_approach_id: String,
     pub calibration: SimulationCalibrationSummary,
+    /// Per-scenario cross-approach comparison table.
+    pub scenario_comparisons: Vec<ScenarioApproachComparison>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -501,7 +621,9 @@ fn decay_state_if_needed(state: &ConceptState, config: &OlmConfig) -> ConceptSta
         return state.clone();
     };
 
-    let now = Utc::now();
+    // Use simulated_now when running synthetic scenarios to avoid applying months of
+    // real-wall-clock decay to events with fixed historical timestamps.
+    let now = config.simulated_now.unwrap_or_else(Utc::now);
     let last_utc = parsed_last.with_timezone(&Utc);
     let seconds_elapsed = now.signed_duration_since(last_utc).num_seconds();
 
@@ -885,6 +1007,15 @@ fn ingest_into_store(
         return Err("Event does not map to any existing concept".to_string());
     }
 
+    // Fix 4: When mapping resolved via content_id (Tier 2, no explicit concept_ids),
+    // apply the mapping quality penalty to w_evidence to reflect weak coverage.
+    let mapping_quality_penalty: f64 = if event.concept_ids.is_empty() && event.content_id.is_some() {
+        let raw_weight_sum: f64 = valid_mapped_concepts.iter().map(|(_, w)| w).sum();
+        content_mapping_quality(raw_weight_sum, valid_mapped_concepts.len()).penalty
+    } else {
+        1.0
+    };
+
     store.study_events.push(event.clone());
     if store.study_events.len() > 5000 {
         let overflow = store.study_events.len() - 5000;
@@ -893,7 +1024,11 @@ fn ingest_into_store(
 
     let mut updated = HashSet::new();
     let decay_config = store.config.clone();
-    let update_now = Utc::now().to_rfc3339();
+    let update_now = if DateTime::parse_from_rfc3339(&event.timestamp).is_ok() {
+        event.timestamp.clone()
+    } else {
+        Utc::now().to_rfc3339()
+    };
 
     for (concept_id, mapping_weight) in valid_mapped_concepts {
 
@@ -917,7 +1052,8 @@ fn ingest_into_store(
         // w_evidence: intrinsic event strength + concept mapping strength
         // r_reliability: trust/reliability layer (confidence + metacognitive trust)
         // g_safety: warmup and hard-cap safety controls
-        let w_evidence = base_weight * mapping_weight;
+        // mapping_quality_penalty reduces w_evidence when mapping comes from content_id (Tier 2)
+        let w_evidence = base_weight * mapping_weight * mapping_quality_penalty;
         let r_reliability = confidence * meta.effective_weight;
         let raw_weight = w_evidence * r_reliability;
         let g_safety = safety_gate_weight(raw_weight, warmup_factor, hard_cap);
@@ -1246,7 +1382,13 @@ fn concept_inconsistency_signal(evidence: Option<&Vec<EvidenceChunk>>) -> f64 {
 
 fn ranking_policy_normalized(policy: &str) -> &str {
     match policy {
-        "learn_next" | "review_next" | "balanced" => policy,
+        "learn_next"
+        | "review_next"
+        | "balanced"
+        | "random"
+        | "mastery_only"
+        | "uncertainty_only"
+        | "curriculum_linear" => policy,
         _ => "adaptive",
     }
 }
@@ -1272,8 +1414,39 @@ fn rank_next_to_study(
     let gamma = clamp_01(readiness_gamma);
     let delta = clamp_01(readiness_distance_delta).max(0.01);
     let policy = ranking_policy_normalized(ranking_policy);
-    let soft_k = soft_gate_k.unwrap_or(1.6).max(0.1);
+    let soft_k = soft_gate_k.unwrap_or(1.6).max(0.0);
     let root_score_penalty = clamp_01(root_penalty);
+
+    let mut curriculum_order: Vec<String> = store.concepts.keys().cloned().collect();
+    curriculum_order.sort();
+    let curriculum_index: HashMap<String, usize> = curriculum_order
+        .iter()
+        .enumerate()
+        .map(|(idx, concept_id)| (concept_id.clone(), idx))
+        .collect();
+    let curriculum_len = curriculum_order.len().max(1) as f64;
+
+    // Pre-compute seeded-random scores when policy is "random".
+    // Uses a seeded shuffle of concept positions so the ordering is a true
+    // random permutation (reproducible per scenario+seed pair) rather than a
+    // deterministic hash that never varies across runs.
+    let random_scores: HashMap<String, f64> = if policy == "random" {
+        let rng_seed = store.config.ranking_seed.unwrap_or(12345);
+        let mut rng = StdRng::seed_from_u64(rng_seed);
+        let n = curriculum_order.len().max(1);
+        let mut indices: Vec<usize> = (0..n).collect();
+        indices.shuffle(&mut rng);
+        curriculum_order
+            .iter()
+            .zip(indices.iter())
+            .map(|(concept_id, &pos)| {
+                let score = 1.0 - (pos as f64 / n as f64);
+                (concept_id.clone(), score)
+            })
+            .collect()
+    } else {
+        HashMap::new()
+    };
 
     let mut state_by_id: HashMap<String, (f64, f64)> = HashMap::new();
     let mut raw_mastery_by_id: HashMap<String, f64> = HashMap::new();
@@ -1383,12 +1556,21 @@ fn rank_next_to_study(
             continue;
         }
 
-        let is_ready = readiness >= threshold;
+        let policy_ignores_gate = matches!(
+            policy,
+            "mastery_only" | "uncertainty_only" | "curriculum_linear" | "random"
+        );
+
+        let is_ready = policy_ignores_gate || readiness >= threshold;
         if is_ready {
             candidates_after_gate += 1;
         }
 
-        let gate_factor = readiness.powf(soft_k);
+        let gate_factor = if policy_ignores_gate {
+            1.0
+        } else {
+            readiness.powf(soft_k)
+        };
 
         if gate_factor <= 0.0 {
             continue;
@@ -1427,10 +1609,34 @@ let review_score = gate_factor * review_signal * root_multiplier;
                     .map(|e| e.len())
                     .unwrap_or(0);
 
+        // Seeded-shuffle random score: pre-computed per concept above.
+        // Falls back to a simple hash if ranking_seed was not set (should not happen
+        // for simulation, but safe for any direct API call without a seed).
+        let random_score = random_scores.get(&concept.id).copied().unwrap_or_else(|| {
+            let mut hasher = DefaultHasher::new();
+            concept.id.hash(&mut hasher);
+            event_count.hash(&mut hasher);
+            (hasher.finish() % 10_000) as f64 / 10_000.0
+        });
+
+        let curriculum_score = {
+            let idx = *curriculum_index.get(&concept.id).unwrap_or(&0) as f64;
+            let order_weight = 1.0 - (idx / curriculum_len);
+            if concept_mastery >= stop_mastery {
+                0.0
+            } else {
+                clamp_01(order_weight)
+            }
+        };
+
         let score = match policy {
             "learn_next" => learn_score,
             "review_next" => review_score,
             "balanced" => balanced_score,
+            "mastery_only" => (1.0 - concept_mastery) * root_multiplier,
+            "uncertainty_only" => concept_uncertainty * root_multiplier,
+            "curriculum_linear" => curriculum_score,
+            "random" => random_score,
             _ => {
                 if event_count == 0 || concept_mastery <= threshold {
                     learn_score
@@ -1621,6 +1827,131 @@ fn scenario_ranking_metrics(
     )
 }
 
+fn average_rank_of_expected(ranked: &[NextToStudyItem], expected_any: &[String]) -> f64 {
+    if ranked.is_empty() || expected_any.is_empty() {
+        return 0.0;
+    }
+
+    let mut ranks = Vec::new();
+    for expected in expected_any {
+        if let Some(rank) = ranked
+            .iter()
+            .position(|item| item.concept_id == *expected)
+            .map(|idx| idx + 1)
+        {
+            ranks.push(rank as f64);
+        }
+    }
+
+    if ranks.is_empty() {
+        (ranked.len() + 1) as f64
+    } else {
+        ranks.iter().sum::<f64>() / (ranks.len() as f64)
+    }
+}
+
+fn simulate_longitudinal_cycles(
+    scenario: &ScenarioBlueprint,
+    approach: &DynApproach,
+    seed: u64,
+) -> Result<LongitudinalMetrics, String> {
+    let mut store = OlmStore::default();
+    materialize_scenario(
+        &mut store,
+        scenario,
+        approach.meta_strength,
+        approach.apply_mapping_penalty,
+    )?;
+    apply_seeded_scenario_noise(&mut store, seed, &format!("{}-long", scenario.id));
+    store.config.decay_enabled = approach.decay_enabled;
+    store.config.decay_half_life_days = approach.decay_half_life_days;
+    store.config.ranking_seed = Some(seeded_scenario_u64(seed, &format!("{}-long", scenario.id)));
+
+    let (start_mastery, _) = average_state(&store);
+    let mut bad_recommendations = 0usize;
+    let mut prereq_violations = 0usize;
+    let mut time_to_mastery = None;
+    let cycles = 8usize;
+
+    for cycle in 0..cycles {
+        // Set simulated_now so decay uses the scenario timeline (Feb 2026) rather than
+        // the real wall-clock time, which would collapse mastery for historical timestamps.
+        let cycle_ts_str = format!("2026-02-{:02}T00:00:00Z", cycle + 1);
+        store.config.simulated_now = DateTime::parse_from_rfc3339(&cycle_ts_str)
+            .ok()
+            .map(|dt| dt.with_timezone(&Utc));
+
+        let exclude = HashSet::new();
+        let (ranked, _) = rank_next_to_study(
+            &store,
+            None,
+            approach.lambda,
+            approach.readiness_threshold,
+            approach.min_readiness,
+            approach.readiness_gamma,
+            approach.readiness_distance_delta,
+            &approach.ranking_policy,
+            approach.soft_gate_k,
+            approach.root_penalty,
+            approach.stop_mastery,
+            &exclude,
+            None,
+        );
+
+        let Some(top) = ranked.first() else {
+            break;
+        };
+
+        if top.readiness < approach.readiness_threshold {
+            prereq_violations += 1;
+        }
+
+        let latent = scenario.true_mastery.get(&top.concept_id).copied().unwrap_or(0.5);
+        if latent > 0.70 {
+            bad_recommendations += 1;
+        }
+
+        let practice_score = (0.35 + (0.45 * latent) + (0.20 * ((cycle + 1) as f64 / cycles as f64)))
+            .clamp(0.0, 1.0);
+        let ts = cycle_ts_str;
+        let followup = sim_event_at(
+            &format!("{}-L", scenario.id),
+            (cycle + 1) as u32,
+            ts,
+            "longitudinal",
+            "practice_attempt",
+            vec![top.concept_id.as_str()],
+            None,
+            json!({
+                "correct": if practice_score >= 0.5 { 1.0 } else { 0.0 },
+                "total": 1.0,
+                "confidence": (latent + 0.15).clamp(0.0, 1.0),
+                "effort": 0.8,
+                "perceived_score": practice_score
+            }),
+        );
+
+        ingest_into_store(&mut store, &followup, approach.meta_strength)?;
+
+        let (avg_mastery_now, _) = average_state(&store);
+        if time_to_mastery.is_none() && avg_mastery_now >= 0.75 {
+            time_to_mastery = Some(cycle + 1);
+        }
+    }
+
+    let (end_mastery, _) = average_state(&store);
+    let mastery_gain = end_mastery - start_mastery;
+
+    Ok(LongitudinalMetrics {
+        learning_gain: mastery_gain,
+        post_test_score: end_mastery,
+        mastery_gain,
+        time_to_mastery,
+        number_of_bad_recommendations: bad_recommendations,
+        prerequisite_violation_rate: prereq_violations as f64 / cycles as f64,
+    })
+}
+
 fn aggregate_subset_metrics(
     scenarios: &[SimulationScenarioResult],
     subset_ids: &[String],
@@ -1652,14 +1983,31 @@ fn build_calibration_split(scenarios: &[ScenarioBlueprint]) -> (Vec<String>, Vec
     let ids: Vec<String> = scenarios.iter().map(|scenario| scenario.id.clone()).collect();
     let id_set: HashSet<&str> = ids.iter().map(|id| id.as_str()).collect();
 
-    let has_canonical = ["S1", "S2", "S3", "S4", "S5", "S6"]
+    let has_canonical = [
+        "S1", "S2", "S3", "S4", "S5", "S6", "S7", "S8", "S9", "S10", "S11",
+        "S12",
+    ]
         .iter()
         .all(|id| id_set.contains(id));
 
     if has_canonical {
         return (
-            vec!["S1".to_string(), "S2".to_string(), "S3".to_string()],
-            vec!["S4".to_string(), "S5".to_string(), "S6".to_string()],
+            vec![
+                "S1".to_string(),
+                "S2".to_string(),
+                "S3".to_string(),
+                "S4".to_string(),
+                "S5".to_string(),
+                "S6".to_string(),
+                "S7".to_string(),
+                "S8".to_string(),
+            ],
+            vec![
+                "S9".to_string(),
+                "S10".to_string(),
+                "S11".to_string(),
+                "S12".to_string(),
+            ],
         );
     }
 
@@ -1699,9 +2047,31 @@ fn sim_event(
     content_id: Option<&str>,
     payload: Value,
 ) -> StudyEvent {
+    sim_event_at(
+        id,
+        step,
+        "2026-01-01T00:00:00Z".to_string(),
+        source,
+        event_type,
+        concept_ids,
+        content_id,
+        payload,
+    )
+}
+
+fn sim_event_at(
+    id: &str,
+    step: u32,
+    timestamp: String,
+    source: &str,
+    event_type: &str,
+    concept_ids: Vec<&str>,
+    content_id: Option<&str>,
+    payload: Value,
+) -> StudyEvent {
     StudyEvent {
         event_id: format!("{}-{}", id, step),
-        timestamp: format!("2026-01-01T00:00:{:02}Z", step % 60),
+        timestamp,
         source: source.to_string(),
         event_type: event_type.to_string(),
         content_id: content_id.map(|s| s.to_string()),
@@ -1748,377 +2118,318 @@ fn sample_event_type(rng: &mut StdRng, mix: &HashMap<String, f64>) -> String {
     "practice_attempt".to_string()
 }
 
-fn seeded_scenario_u64(seed: u64, scenario_id: &str) -> u64 {
-    let mut hasher = DefaultHasher::new();
-    seed.hash(&mut hasher);
-    scenario_id.hash(&mut hasher);
-    hasher.finish()
+/// Derive the expected ground-truth concepts to study next.
+///
+/// Priority 1 — "weak and unblocked": concepts with `true_mastery < 0.55`
+/// whose *direct* prerequisites all have `true_mastery >= 0.60`. This aligns
+/// the ground truth with pedagogically correct sequencing: the system should
+/// surface concepts that are genuinely learnable right now, not blocked ones.
+///
+/// Priority 2 — fallback to any weak concept (< 0.55) when no unblocked weak
+/// concept exists (e.g. all weak concepts have at least one weak prerequisite).
+///
+/// Priority 3 — if no concept has `true_mastery < 0.55`, return the single
+/// concept with the lowest mastery.
+fn expected_any_from_true_mastery(
+    true_mastery: &HashMap<String, f64>,
+    edges: &[(String, String)],
+) -> Vec<String> {
+    // Build direct-prerequisite map: target → {direct prereqs}
+    let mut direct_prereqs: HashMap<&str, Vec<&str>> = HashMap::new();
+    for (prereq, target) in edges {
+        direct_prereqs
+            .entry(target.as_str())
+            .or_default()
+            .push(prereq.as_str());
+    }
+
+    let mut pairs: Vec<(&String, &f64)> = true_mastery.iter().collect();
+    pairs.sort_by(|a, b| {
+        a.1.partial_cmp(b.1)
+            .unwrap_or(Ordering::Equal)
+            .then_with(|| a.0.cmp(b.0))  // stable tie-break by concept id
+    });
+
+    let prereqs_dominated = |id: &str| -> bool {
+        let prereqs = direct_prereqs.get(id).map(|v| v.as_slice()).unwrap_or(&[]);
+        prereqs.iter().all(|p| true_mastery.get(*p).copied().unwrap_or(0.0) >= 0.60)
+    };
+
+    // Priority 1: weak + all direct prereqs dominated
+    let unblocked_weak: Vec<String> = pairs
+        .iter()
+        .filter(|(id, mastery)| **mastery < 0.55 && prereqs_dominated(id.as_str()))
+        .map(|(id, _)| (*id).clone())
+        .take(3)
+        .collect();
+
+    if !unblocked_weak.is_empty() {
+        return unblocked_weak;
+    }
+
+    // Priority 2: any weak concept (prereqs may not be dominated)
+    let any_weak: Vec<String> = pairs
+        .iter()
+        .filter_map(|(id, mastery)| if **mastery < 0.55 { Some((*id).clone()) } else { None })
+        .take(3)
+        .collect();
+
+    if !any_weak.is_empty() {
+        return any_weak;
+    }
+
+    // Priority 3: lowest mastery overall
+    pairs
+        .first()
+        .map(|(id, _)| vec![(*id).clone()])
+        .unwrap_or_default()
 }
 
-fn apply_seeded_scenario_noise(store: &mut OlmStore, seed: u64, scenario_id: &str) {
-    let mut rng = StdRng::seed_from_u64(seeded_scenario_u64(seed, scenario_id));
-
-    // Apply light deterministic perturbation so multi-seed runs are reproducible with small variance.
-    for state in store.concept_state.values_mut() {
-        let alpha_scale = rng.gen_range(0.98_f64..1.02_f64);
-        let beta_scale = rng.gen_range(0.98_f64..1.02_f64);
-        state.alpha = (state.alpha * alpha_scale).clamp(0.1, 1_000.0);
-        state.beta = (state.beta * beta_scale).clamp(0.1, 1_000.0);
+fn build_chain_with_shortcuts(
+    concepts: &[String],
+    density: f64,
+    rng: &mut StdRng,
+) -> Vec<(String, String)> {
+    let mut edges = Vec::new();
+    for idx in 1..concepts.len() {
+        edges.push((concepts[idx - 1].clone(), concepts[idx].clone()));
     }
+
+    for target in 2..concepts.len() {
+        for prereq in 0..target - 1 {
+            if rng.gen_bool(density.clamp(0.0, 1.0) * 0.4) {
+                edges.push((concepts[prereq].clone(), concepts[target].clone()));
+            }
+        }
+    }
+
+    edges
+}
+
+fn canonical_true_mastery(profile: &str, concepts: &[String], rng: &mut StdRng) -> HashMap<String, f64> {
+    let mut map = HashMap::new();
+    let n = concepts.len().max(1) as f64;
+
+    for (idx, concept_id) in concepts.iter().enumerate() {
+        let t = idx as f64 / n;
+        let base = match profile {
+            "linear" => (0.88 - (0.55 * t)).clamp(0.15, 0.95),
+            "blocked" => if idx < 2 { 0.20 } else { 0.60 },
+            "core_errors" => if idx == concepts.len() / 2 { 0.15 } else { 0.65 },
+            "high_uncertainty" => {
+                // Deterministic gradient: avoids HashMap-order ties in expected_any.
+                let n = concepts.len().max(1) as f64;
+                (0.45 + 0.08 * (idx as f64 / n)).clamp(0.40, 0.60)
+            }
+            "overconfidence" => rng.gen_range(0.20_f64..0.45_f64),
+            "underconfidence" => rng.gen_range(0.70_f64..0.92_f64),
+            "multi_weak" => if idx % 2 == 0 { 0.30 } else { 0.55 },
+            "advanced_blocked" => {
+                if idx + 1 == concepts.len() {
+                    0.20
+                } else if idx + 2 == concepts.len() {
+                    0.25
+                } else {
+                    0.70
+                }
+            }
+            "almost_mastered" => rng.gen_range(0.84_f64..0.96_f64),
+            "all_unknown" => rng.gen_range(0.08_f64..0.26_f64),
+            "weak_mapping" => rng.gen_range(0.25_f64..0.60_f64),
+            "strong_mapping" => rng.gen_range(0.30_f64..0.70_f64),
+            _ => rng.gen_range(0.25_f64..0.75_f64),
+        };
+        map.insert(concept_id.clone(), clamp_01(base));
+    }
+
+    map
 }
 
 fn baseline_scenario_blueprints(seed: u64) -> Vec<ScenarioBlueprint> {
-    let concepts = vec![
-        "foundation".to_string(),
-        "domain_core".to_string(),
-        "advanced_problem".to_string(),
-    ];
-    let mut list = Vec::new();
-    let base_mix = HashMap::from([
-        ("quiz_attempt".to_string(), 0.25),
-        ("practice_attempt".to_string(), 0.35),
-        ("review".to_string(), 0.15),
-        ("study_read".to_string(), 0.15),
-        ("self_assessment".to_string(), 0.10),
-    ]);
-
-    let make_meta = |_id: &str,
-                     _name: &str,
-                     error_rate: f64,
-                     meta: f64,
-                     mapping_quality: f64,
-                     event_count: usize| ScenarioMetadata {
-        mode: "baseline".to_string(),
-        seed,
-        graph_size: 3,
-        prereq_density: 0.66,
-        depth: 3,
-        event_count,
-        event_mix: base_mix.clone(),
-        error_rate,
-        confidence_level: 0.7,
-        effort_level: 0.7,
-        metacognitive_alignment: meta,
-        mapping_quality,
-    };
-
-    let mut s1_events = Vec::new();
-    s1_events.push(sim_event(
-        "S1",
-        1,
-        "manual",
-        "quiz_attempt",
-        vec!["foundation"],
-        None,
-        json!({"correct":1.0,"total":1.0,"confidence":0.8,"effort":0.8,"perceived_score":0.8}),
-    ));
-    s1_events.push(sim_event(
-        "S1",
-        2,
-        "manual",
-        "practice_attempt",
-        vec!["foundation"],
-        None,
-        json!({"correct":1.0,"total":1.0,"confidence":0.75,"effort":0.7}),
-    ));
-    s1_events.push(sim_event(
-        "S1",
-        3,
-        "manual",
-        "practice_attempt",
-        vec!["domain_core"],
-        None,
-        json!({"correct":1.0,"total":1.0,"confidence":0.7,"effort":0.7}),
-    ));
-    s1_events.push(sim_event(
-        "S1",
-        4,
-        "manual",
-        "practice_attempt",
-        vec!["domain_core"],
-        None,
-        json!({"correct":1.0,"total":1.0,"confidence":0.7,"effort":0.65}),
-    ));
-    s1_events.push(sim_event(
-        "S1",
-        5,
-        "manual",
-        "practice_attempt",
-        vec!["advanced_problem"],
-        None,
-        json!({"correct":0.0,"total":1.0,"confidence":0.6,"effort":0.7,"perceived_score":0.7}),
-    ));
-    list.push(ScenarioBlueprint {
-        id: "S1".to_string(),
-        name: "Progressão linear".to_string(),
-        expected_any: vec!["foundation".to_string(), "domain_core".to_string()],
-        concepts: concepts.clone(),
-        edges: vec![
-            ("foundation".to_string(), "domain_core".to_string()),
-            ("domain_core".to_string(), "advanced_problem".to_string()),
-        ],
-        content_items: vec![],
-        content_concepts: vec![],
-        events: s1_events,
-        metadata: make_meta("S1", "Progressão linear", 0.2, 0.75, 1.0, 5),
-    });
-
-    let s2_events = vec![
-        sim_event(
-            "S2",
-            1,
-            "manual",
-            "quiz_attempt",
-            vec!["foundation"],
-            None,
-            json!({"correct":0.0,"total":1.0,"confidence":0.8,"perceived_score":0.9,"effort":0.8}),
-        ),
-        sim_event(
-            "S2",
-            2,
-            "manual",
-            "practice_attempt",
-            vec!["foundation"],
-            None,
-            json!({"correct":0.0,"total":1.0,"confidence":0.75,"perceived_score":0.8,"effort":0.7}),
-        ),
-        sim_event(
-            "S2",
-            3,
-            "manual",
-            "practice_attempt",
-            vec!["advanced_problem"],
-            None,
-            json!({"correct":1.0,"total":1.0,"confidence":0.55,"effort":0.6}),
-        ),
-    ];
-    list.push(ScenarioBlueprint {
-        id: "S2".to_string(),
-        name: "Pré-requisito bloqueado".to_string(),
-        expected_any: vec!["foundation".to_string()],
-        concepts: concepts.clone(),
-        edges: vec![
-            ("foundation".to_string(), "domain_core".to_string()),
-            ("domain_core".to_string(), "advanced_problem".to_string()),
-        ],
-        content_items: vec![],
-        content_concepts: vec![],
-        events: s2_events,
-        metadata: make_meta("S2", "Pré-requisito bloqueado", 0.67, 0.2, 1.0, 3),
-    });
-
-    let mut s3_events = vec![sim_event(
-        "S3",
-        1,
-        "manual",
-        "practice_attempt",
-        vec!["foundation"],
-        None,
-        json!({"correct":1.0,"total":1.0,"confidence":0.8}),
-    )];
-    for step in 2..=5 {
-        s3_events.push(sim_event(
-            "S3",
-            step,
-            "manual",
-            "practice_attempt",
-            vec!["domain_core"],
-            None,
-            json!({"correct":0.0,"total":1.0,"confidence":0.7,"effort":0.65}),
-        ));
+    #[derive(Clone)]
+    struct CanonicalPreset {
+        id: &'static str,
+        name: &'static str,
+        profile: &'static str,
+        graph_size: usize,
+        event_count: usize,
+        prereq_density: f64,
+        mapping_quality: f64,
+        old_timestamps: bool,
     }
-    list.push(ScenarioBlueprint {
-        id: "S3".to_string(),
-        name: "Erros repetidos no core".to_string(),
-        expected_any: vec!["domain_core".to_string(), "foundation".to_string()],
-        concepts: concepts.clone(),
-        edges: vec![
-            ("foundation".to_string(), "domain_core".to_string()),
-            ("domain_core".to_string(), "advanced_problem".to_string()),
-        ],
-        content_items: vec![],
-        content_concepts: vec![],
-        events: s3_events,
-        metadata: make_meta("S3", "Erros repetidos no core", 0.8, 0.5, 1.0, 5),
-    });
 
-    let s4_events = vec![
-        sim_event(
-            "S4",
-            1,
-            "manual",
-            "review",
-            vec!["foundation"],
-            None,
-            json!({"confidence":0.9,"perceived_score":0.95,"effort":0.4}),
-        ),
-        sim_event(
-            "S4",
-            2,
-            "manual",
-            "review",
-            vec!["domain_core"],
-            None,
-            json!({"confidence":0.88,"perceived_score":0.9,"effort":0.4}),
-        ),
-        sim_event(
-            "S4",
-            3,
-            "manual",
-            "study_read",
-            vec!["advanced_problem"],
-            None,
-            json!({"confidence":0.85,"perceived_score":0.9,"effort":0.3}),
-        ),
+    let presets = vec![
+        CanonicalPreset { id: "S1",  name: "Progressao linear simples",                  profile: "linear",           graph_size: 12, event_count: 28, prereq_density: 0.30, mapping_quality: 0.90, old_timestamps: false },
+        CanonicalPreset { id: "S2",  name: "Pre-requisito bloqueado",                    profile: "blocked",          graph_size: 14, event_count: 32, prereq_density: 0.50, mapping_quality: 0.90, old_timestamps: false },
+        CanonicalPreset { id: "S3",  name: "Conceito core com erros repetidos",          profile: "core_errors",      graph_size: 14, event_count: 36, prereq_density: 0.50, mapping_quality: 0.90, old_timestamps: false },
+        CanonicalPreset { id: "S4",  name: "Alta incerteza por pouca evidencia",         profile: "high_uncertainty", graph_size: 12, event_count: 20, prereq_density: 0.38, mapping_quality: 0.90, old_timestamps: false },
+        CanonicalPreset { id: "S5",  name: "Overconfidence",                             profile: "overconfidence",   graph_size: 15, event_count: 40, prereq_density: 0.50, mapping_quality: 0.88, old_timestamps: false },
+        CanonicalPreset { id: "S6",  name: "Underconfidence",                            profile: "underconfidence",  graph_size: 15, event_count: 40, prereq_density: 0.50, mapping_quality: 0.88, old_timestamps: false },
+        CanonicalPreset { id: "S7",  name: "Varios conceitos fracos",                    profile: "multi_weak",       graph_size: 16, event_count: 45, prereq_density: 0.55, mapping_quality: 0.90, old_timestamps: false },
+        CanonicalPreset { id: "S8",  name: "Conceito avancado com pre-requisito fraco",  profile: "advanced_blocked", graph_size: 16, event_count: 42, prereq_density: 0.55, mapping_quality: 0.90, old_timestamps: false },
+        CanonicalPreset { id: "S9",  name: "Todos os conceitos quase dominados",         profile: "almost_mastered",  graph_size: 14, event_count: 30, prereq_density: 0.50, mapping_quality: 0.92, old_timestamps: true },
+        CanonicalPreset { id: "S10", name: "Todos os conceitos desconhecidos",           profile: "all_unknown",      graph_size: 14, event_count: 30, prereq_density: 0.50, mapping_quality: 0.92, old_timestamps: true },
+        CanonicalPreset { id: "S11", name: "Conteudo com mapeamento fraco",              profile: "weak_mapping",     graph_size: 12, event_count: 28, prereq_density: 0.45, mapping_quality: 0.35, old_timestamps: false },
+        CanonicalPreset { id: "S12", name: "Conteudo com mapeamento correcto",           profile: "strong_mapping",   graph_size: 12, event_count: 28, prereq_density: 0.45, mapping_quality: 0.95, old_timestamps: false },
     ];
-    list.push(ScenarioBlueprint {
-        id: "S4".to_string(),
-        name: "Incerteza alta".to_string(),
-        expected_any: vec!["foundation".to_string()],
-        concepts: concepts.clone(),
-        edges: vec![
-            ("foundation".to_string(), "domain_core".to_string()),
-            ("domain_core".to_string(), "advanced_problem".to_string()),
-        ],
-        content_items: vec![],
-        content_concepts: vec![],
-        events: s4_events,
-        metadata: make_meta("S4", "Incerteza alta", 0.35, 0.95, 1.0, 3),
-    });
 
-    let s5_events = vec![
-        sim_event(
-            "S5",
-            1,
-            "manual",
-            "quiz_attempt",
-            vec!["foundation"],
-            None,
-            json!({"correct":1.0,"total":1.0,"confidence":0.78,"effort":0.7}),
-        ),
-        sim_event(
-            "S5",
-            2,
-            "manual",
-            "practice_attempt",
-            vec!["domain_core"],
-            None,
-            json!({"correct":1.0,"total":1.0,"confidence":0.72,"effort":0.7}),
-        ),
-        sim_event(
-            "S5",
-            3,
-            "manual",
-            "review",
-            vec!["advanced_problem"],
-            None,
-            json!({"confidence":0.68,"perceived_score":0.7,"effort":0.5}),
-        ),
-        sim_event(
-            "S5",
-            4,
-            "manual",
-            "self_assessment",
-            vec!["advanced_problem"],
-            None,
-            json!({"confidence":0.65,"perceived_score":0.6,"effort":0.6}),
-        ),
-    ];
-    list.push(ScenarioBlueprint {
-        id: "S5".to_string(),
-        name: "Multi-fonte".to_string(),
-        expected_any: vec![
-            "foundation".to_string(),
-            "domain_core".to_string(),
-            "advanced_problem".to_string(),
-        ],
-        concepts: concepts.clone(),
-        edges: vec![
-            ("foundation".to_string(), "domain_core".to_string()),
-            ("domain_core".to_string(), "advanced_problem".to_string()),
-        ],
-        content_items: vec![],
-        content_concepts: vec![],
-        events: s5_events,
-        metadata: make_meta("S5", "Multi-fonte", 0.25, 0.7, 1.0, 4),
-    });
+    let mut blueprints = Vec::new();
 
-    let content_items = vec![ContentItem {
-        id: "lesson_1".to_string(),
-        item_type: "lesson".to_string(),
-        title: "Lesson 1".to_string(),
-        domain_id: None,
-    }];
-    let content_concepts = vec![
-        ContentConceptMap {
-            content_id: "lesson_1".to_string(),
-            concept_id: "foundation".to_string(),
-            coverage_weight: 1.0,
-        },
-        ContentConceptMap {
-            content_id: "lesson_1".to_string(),
-            concept_id: "domain_core".to_string(),
-            coverage_weight: 0.4,
-        },
-    ];
-    let s6_events = vec![
-        sim_event(
-            "S6",
-            1,
-            "manual",
-            "practice_attempt",
-            vec![],
-            Some("lesson_1"),
-            json!({"correct":1.0,"total":1.0,"confidence":0.75,"effort":0.7}),
-        ),
-        sim_event(
-            "S6",
-            2,
-            "manual",
-            "practice_attempt",
-            vec![],
-            Some("lesson_1"),
-            json!({"correct":1.0,"total":1.0,"confidence":0.7,"effort":0.7}),
-        ),
-        sim_event(
-            "S6",
-            3,
-            "manual",
-            "practice_attempt",
-            vec!["domain_core"],
-            None,
-            json!({"correct":0.0,"total":1.0,"confidence":0.6,"effort":0.7}),
-        ),
-    ];
-    list.push(ScenarioBlueprint {
-        id: "S6".to_string(),
-        name: "Cobertura parcial".to_string(),
-        expected_any: vec!["foundation".to_string(), "domain_core".to_string()],
-        concepts: concepts,
-        edges: vec![
-            ("foundation".to_string(), "domain_core".to_string()),
-            ("domain_core".to_string(), "advanced_problem".to_string()),
-        ],
-        content_items,
-        content_concepts,
-        events: s6_events,
-        metadata: make_meta("S6", "Cobertura parcial", 0.34, 0.7, 0.7, 3),
-    });
+    for preset in presets {
+        let mut rng = StdRng::seed_from_u64(seeded_scenario_u64(seed, preset.id));
+        let concepts: Vec<String> = (0..preset.graph_size)
+            .map(|i| format!("{}_c{}", preset.id.to_ascii_lowercase(), i + 1))
+            .collect();
 
-    list
+        let edges = build_chain_with_shortcuts(&concepts, preset.prereq_density, &mut rng);
+        let true_mastery = canonical_true_mastery(preset.profile, &concepts, &mut rng);
+        let expected_any = expected_any_from_true_mastery(&true_mastery, &edges);
+
+        let event_mix = scenario_event_mix(&mut rng);
+        let mut content_items = Vec::new();
+        let mut content_concepts = Vec::new();
+
+        if preset.profile == "weak_mapping" || preset.profile == "strong_mapping" {
+            for item_idx in 0..3 {
+                let content_id = format!("{}_lesson_{}", preset.id.to_ascii_lowercase(), item_idx + 1);
+                content_items.push(ContentItem {
+                    id: content_id.clone(),
+                    item_type: "lesson".to_string(),
+                    title: format!("{} Lesson {}", preset.id, item_idx + 1),
+                    domain_id: None,
+                });
+                for concept_id in concepts.iter().skip(item_idx).step_by(2) {
+                    content_concepts.push(ContentConceptMap {
+                        content_id: content_id.clone(),
+                        concept_id: concept_id.clone(),
+                        coverage_weight: (rng.gen_range(0.2_f64..1.0_f64) * preset.mapping_quality)
+                            .clamp(0.05, 1.0),
+                    });
+                }
+            }
+        }
+
+        let mut events = Vec::new();
+        let weak_concepts: Vec<String> = concepts
+            .iter()
+            .filter(|c| true_mastery.get(*c).copied().unwrap_or(0.5) < 0.55)
+            .cloned()
+            .collect();
+
+        for step in 0..preset.event_count {
+            let event_type = sample_event_type(&mut rng, &event_mix);
+            let use_weak = !weak_concepts.is_empty() && rng.gen_bool(0.65);
+            let concept_id = if use_weak {
+                weak_concepts[rng.gen_range(0..weak_concepts.len())].clone()
+            } else {
+                concepts[rng.gen_range(0..concepts.len())].clone()
+            };
+
+            let true_level = true_mastery.get(&concept_id).copied().unwrap_or(0.5);
+            let observed = (true_level + rng.gen_range(-0.25_f64..0.25_f64)).clamp(0.0, 1.0);
+            let confidence = match preset.profile {
+                "overconfidence" => rng.gen_range(0.80_f64..0.98_f64),
+                "underconfidence" => rng.gen_range(0.10_f64..0.35_f64),
+                _ => (observed + rng.gen_range(-0.15_f64..0.15_f64)).clamp(0.0, 1.0),
+            };
+            let effort = rng.gen_range(0.35_f64..0.95_f64);
+            let perceived_score = match preset.profile {
+                "overconfidence" => (confidence + rng.gen_range(0.0_f64..0.15_f64)).clamp(0.0, 1.0),
+                "underconfidence" => (confidence + rng.gen_range(-0.1_f64..0.1_f64)).clamp(0.0, 1.0),
+                _ => (observed + rng.gen_range(-0.10_f64..0.10_f64)).clamp(0.0, 1.0),
+            };
+
+            let payload = match event_type.as_str() {
+                "quiz_attempt" | "practice_attempt" => {
+                    json!({
+                        "correct": if observed >= 0.5 { 1.0 } else { 0.0 },
+                        "total": 1.0,
+                        "confidence": confidence,
+                        "effort": effort,
+                        "perceived_score": perceived_score
+                    })
+                }
+                _ => json!({
+                    "confidence": confidence,
+                    "effort": effort,
+                    "perceived_score": perceived_score
+                }),
+            };
+
+            let timestamp = if preset.old_timestamps {
+                match step % 3 {
+                    0 => "2025-01-01T00:00:00Z".to_string(),
+                    1 => "2025-06-01T00:00:00Z".to_string(),
+                    _ => "2026-01-01T00:00:00Z".to_string(),
+                }
+            } else {
+                format!("2026-01-01T00:{:02}:{:02}Z", (step / 60) % 60, step % 60)
+            };
+
+            let use_content = !content_items.is_empty() && rng.gen_bool(0.65);
+            let selected_content_id = if use_content {
+                Some(
+                    content_items[rng.gen_range(0..content_items.len())]
+                        .id
+                        .as_str(),
+                )
+            } else {
+                None
+            };
+            let concept_ids = if use_content { vec![] } else { vec![concept_id.as_str()] };
+
+            events.push(sim_event_at(
+                preset.id,
+                (step + 1) as u32,
+                timestamp,
+                "canonical",
+                &event_type,
+                concept_ids,
+                selected_content_id,
+                payload,
+            ));
+        }
+
+        blueprints.push(ScenarioBlueprint {
+            id: preset.id.to_string(),
+            name: preset.name.to_string(),
+            expected_any,
+            true_mastery,
+            concepts,
+            edges,
+            content_items,
+            content_concepts,
+            events,
+            metadata: ScenarioMetadata {
+                mode: "canonical".to_string(),
+                seed,
+                graph_size: preset.graph_size,
+                prereq_density: preset.prereq_density,
+                depth: 4,
+                event_count: preset.event_count,
+                event_mix,
+                error_rate: 0.25,
+                confidence_level: 0.65,
+                effort_level: 0.70,
+                metacognitive_alignment: 0.65,
+                mapping_quality: preset.mapping_quality,
+            },
+        });
+    }
+
+    blueprints
 }
 
 fn generated_scenario_blueprints(seed: u64, options: &SimulationOptions) -> Vec<ScenarioBlueprint> {
-    let mut rng = StdRng::seed_from_u64(seed ^ 0x9E3779B97F4A7C15);
     let mut blueprints = Vec::new();
 
     for idx in 0..options.generated_scenarios {
         let scenario_seed = seed.wrapping_add((idx as u64) * 7919);
         let mut local_rng = StdRng::seed_from_u64(scenario_seed);
-        let graph_size = options.graph_size.max(3);
-        let depth = options.depth.max(2).min(graph_size);
+        let graph_size = options.graph_size.max(6);
+        let depth = options.depth.max(3).min(graph_size);
         let prereq_density = options.prereq_density.clamp(0.0, 1.0);
-        let event_count = options.event_count.max(3);
+        let event_count = options.event_count.max(10);
         let mapping_quality = options.mapping_quality.clamp(0.1, 1.0);
 
         let concepts: Vec<String> = (0..graph_size)
@@ -2143,11 +2454,17 @@ fn generated_scenario_blueprints(seed: u64, options: &SimulationOptions) -> Vec<
             }
         }
 
-        let event_mix = scenario_event_mix(&mut rng);
-        let error_rate = local_rng.gen_range(0.05_f64..0.65_f64);
+        // Isolado por cenário para evitar correlação artificial intra-seed.
+        let event_mix = scenario_event_mix(&mut local_rng);
         let confidence_level = local_rng.gen_range(0.4_f64..0.95_f64);
         let effort_level = local_rng.gen_range(0.35_f64..0.95_f64);
         let metacognitive_alignment = local_rng.gen_range(0.2_f64..0.95_f64);
+
+        let true_mastery: HashMap<String, f64> = concepts
+            .iter()
+            .map(|concept_id| (concept_id.clone(), local_rng.gen_range(0.1_f64..0.9_f64)))
+            .collect();
+        let expected_any = expected_any_from_true_mastery(&true_mastery, &edges);
 
         let mut content_items = Vec::new();
         let mut content_concepts = Vec::new();
@@ -2159,53 +2476,44 @@ fn generated_scenario_blueprints(seed: u64, options: &SimulationOptions) -> Vec<
                 title: format!("Generated Lesson {}", content_idx + 1),
                 domain_id: None,
             });
-            let mut selected_concepts: Vec<String> = Vec::new();
             for concept_id in &concepts {
                 if local_rng.gen_bool(0.5) {
-                    selected_concepts.push(concept_id.clone());
+                    let weight = (local_rng.gen_range(0.2_f64..1.0_f64) * mapping_quality)
+                        .clamp(0.05, 1.0);
+                    content_concepts.push(ContentConceptMap {
+                        content_id: content_id.clone(),
+                        concept_id: concept_id.clone(),
+                        coverage_weight: weight,
+                    });
                 }
-            }
-
-            if selected_concepts.is_empty() {
-                let fallback_idx = local_rng.gen_range(0..concepts.len());
-                selected_concepts.push(concepts[fallback_idx].clone());
-            }
-
-            for concept_id in selected_concepts {
-                let weight =
-                    (local_rng.gen_range(0.2_f64..1.0_f64) * mapping_quality).clamp(0.05, 1.0);
-                content_concepts.push(ContentConceptMap {
-                    content_id: content_id.clone(),
-                    concept_id,
-                    coverage_weight: weight,
-                });
             }
         }
 
         let mut events = Vec::new();
         for step in 0..event_count {
             let event_type = sample_event_type(&mut local_rng, &event_mix);
-            let concept_index = local_rng.gen_range(0..graph_size);
-            let concept_id = concepts[concept_index].clone();
-            let had_error = local_rng.gen_bool(error_rate);
-            let base_score = if had_error {
-                local_rng.gen_range(0.0_f64..0.45_f64)
-            } else {
-                local_rng.gen_range(0.55_f64..1.0_f64)
-            };
-            let perceived = (base_score * metacognitive_alignment)
+            let concept_id = concepts[local_rng.gen_range(0..graph_size)].clone();
+            let latent = true_mastery.get(&concept_id).copied().unwrap_or(0.5);
+            let observed = (latent + local_rng.gen_range(-0.30_f64..0.30_f64)).clamp(0.0, 1.0);
+
+            let perceived = (observed * metacognitive_alignment)
                 + ((1.0 - metacognitive_alignment) * local_rng.gen_range(0.0_f64..1.0_f64));
             let confidence =
-                (confidence_level + local_rng.gen_range(-0.15_f64..0.15_f64)).clamp(0.0, 1.0);
+                (confidence_level + local_rng.gen_range(-0.18_f64..0.18_f64)).clamp(0.0, 1.0);
             let effort = (effort_level + local_rng.gen_range(-0.15_f64..0.15_f64)).clamp(0.0, 1.0);
             let payload = match event_type.as_str() {
-                "quiz_attempt" | "practice_attempt" => {
-                    let total = 1.0;
-                    json!({"correct": if base_score >= 0.5 { 1.0 } else { 0.0 }, "total": total, "confidence": confidence, "effort": effort, "perceived_score": perceived})
-                }
-                _ => {
-                    json!({"confidence": confidence, "effort": effort, "perceived_score": perceived})
-                }
+                "quiz_attempt" | "practice_attempt" => json!({
+                    "correct": if observed >= 0.5 { 1.0 } else { 0.0 },
+                    "total": 1.0,
+                    "confidence": confidence,
+                    "effort": effort,
+                    "perceived_score": perceived
+                }),
+                _ => json!({
+                    "confidence": confidence,
+                    "effort": effort,
+                    "perceived_score": perceived
+                }),
             };
 
             let use_content = local_rng.gen_bool(0.35) && !content_items.is_empty();
@@ -2223,9 +2531,11 @@ fn generated_scenario_blueprints(seed: u64, options: &SimulationOptions) -> Vec<
             } else {
                 vec![concept_id.as_str()]
             };
-            events.push(sim_event(
+
+            events.push(sim_event_at(
                 &format!("G{}", idx + 1),
                 (step + 1) as u32,
+                format!("2026-01-01T00:{:02}:{:02}Z", (step / 60) % 60, step % 60),
                 "generated",
                 &event_type,
                 concept_ids,
@@ -2234,36 +2544,11 @@ fn generated_scenario_blueprints(seed: u64, options: &SimulationOptions) -> Vec<
             ));
         }
 
-        let mut avg_scores: HashMap<String, (f64, usize)> = HashMap::new();
-        for event in &events {
-            let score = event_score(event);
-            for c in event.concept_ids.iter() {
-                let entry = avg_scores.entry(c.clone()).or_insert((0.0, 0));
-                entry.0 += score;
-                entry.1 += 1;
-            }
-        }
-        let expected_any = avg_scores
-            .iter()
-            .filter_map(|(k, (sum, n))| {
-                if *n > 0 && (*sum / *n as f64) < 0.55 {
-                    Some(k.clone())
-                } else {
-                    None
-                }
-            })
-            .take(3)
-            .collect::<Vec<_>>();
-        let expected_any = if expected_any.is_empty() {
-            vec![concepts[0].clone()]
-        } else {
-            expected_any
-        };
-
         blueprints.push(ScenarioBlueprint {
             id: format!("G{}", idx + 1),
             name: format!("Generated scenario {}", idx + 1),
             expected_any,
+            true_mastery,
             concepts,
             edges,
             content_items,
@@ -2277,7 +2562,7 @@ fn generated_scenario_blueprints(seed: u64, options: &SimulationOptions) -> Vec<
                 depth,
                 event_count,
                 event_mix,
-                error_rate,
+                error_rate: 0.25,
                 confidence_level,
                 effort_level,
                 metacognitive_alignment,
@@ -2287,6 +2572,25 @@ fn generated_scenario_blueprints(seed: u64, options: &SimulationOptions) -> Vec<
     }
 
     blueprints
+}
+
+fn seeded_scenario_u64(seed: u64, scenario_id: &str) -> u64 {
+    let mut hasher = DefaultHasher::new();
+    seed.hash(&mut hasher);
+    scenario_id.hash(&mut hasher);
+    hasher.finish()
+}
+
+fn apply_seeded_scenario_noise(store: &mut OlmStore, seed: u64, scenario_id: &str) {
+    let mut rng = StdRng::seed_from_u64(seeded_scenario_u64(seed, scenario_id));
+
+    // Apply light deterministic perturbation so multi-seed runs are reproducible with small variance.
+    for state in store.concept_state.values_mut() {
+        let alpha_scale = rng.gen_range(0.98_f64..1.02_f64);
+        let beta_scale = rng.gen_range(0.98_f64..1.02_f64);
+        state.alpha = (state.alpha * alpha_scale).clamp(0.1, 1_000.0);
+        state.beta = (state.beta * beta_scale).clamp(0.1, 1_000.0);
+    }
 }
 
 fn build_simulation_scenarios(seed: u64, options: &SimulationOptions) -> Vec<ScenarioBlueprint> {
@@ -2306,7 +2610,8 @@ fn build_simulation_scenarios(seed: u64, options: &SimulationOptions) -> Vec<Sce
 fn materialize_scenario(
     store: &mut OlmStore,
     scenario: &ScenarioBlueprint,
-    approach: &ApproachConfig,
+    meta_strength: f64,
+    apply_mapping_penalty: bool,
 ) -> Result<(), String> {
     for concept_id in &scenario.concepts {
         upsert_local_concept(store, concept_id, concept_id);
@@ -2323,18 +2628,370 @@ fn materialize_scenario(
     }
 
     for event in &scenario.events {
-        ingest_into_store(store, event, approach.meta_strength)?;
+        if apply_mapping_penalty {
+            match ingest_into_store(store, event, meta_strength) {
+                Ok(_) => {}
+                Err(err)
+                    if err.contains("Event must include concept_ids or a content_id mapped to concepts") =>
+                {
+                    continue;
+                }
+                Err(err) => return Err(err),
+            }
+            continue;
+        }
+
+        // No-mapping-penalty ablation: resolve content mappings to explicit concept_ids
+        // so ingest path skips mapping-quality penalty branch.
+        let mut adapted_event = event.clone();
+        if adapted_event.concept_ids.is_empty() {
+            if let Some(content_id) = adapted_event.content_id.as_ref() {
+                let mapped: Vec<String> = store
+                    .content_concepts
+                    .iter()
+                    .filter(|map| &map.content_id == content_id)
+                    .map(|map| map.concept_id.clone())
+                    .collect();
+                if !mapped.is_empty() {
+                    adapted_event.concept_ids = mapped;
+                }
+            }
+        }
+
+        if adapted_event.concept_ids.is_empty() && adapted_event.content_id.is_some() {
+            // Some synthetic events intentionally stress weak content mappings.
+            // For this ablation, drop unresolved mapping-only events instead of failing.
+            continue;
+        }
+
+        match ingest_into_store(store, &adapted_event, meta_strength) {
+            Ok(_) => {}
+            Err(err)
+                if err.contains("Event must include concept_ids or a content_id mapped to concepts") =>
+            {
+                continue;
+            }
+            Err(err) => return Err(err),
+        }
     }
 
     Ok(())
 }
 
+/// Owned runtime approach config used inside the simulation loop.
+/// Built-in `ApproachConfig` (with `&'static str`) converts into this.
+#[derive(Debug, Clone)]
+struct DynApproach {
+    id: String,
+    name: String,
+    description: String,
+    lambda: f64,
+    readiness_threshold: f64,
+    min_readiness: f64,
+    readiness_gamma: f64,
+    readiness_distance_delta: f64,
+    ranking_policy: String,
+    root_penalty: f64,
+    meta_strength: f64,
+    soft_gate_k: Option<f64>,
+    stop_mastery: f64,
+    decay_enabled: bool,
+    decay_half_life_days: f64,
+    apply_mapping_penalty: bool,
+}
+
+impl From<&ApproachConfig> for DynApproach {
+    fn from(a: &ApproachConfig) -> Self {
+        Self {
+            id: a.id.to_string(),
+            name: a.name.to_string(),
+            description: a.description.to_string(),
+            lambda: a.lambda,
+            readiness_threshold: a.readiness_threshold,
+            min_readiness: a.min_readiness,
+            readiness_gamma: a.readiness_gamma,
+            readiness_distance_delta: a.readiness_distance_delta,
+            ranking_policy: a.ranking_policy.to_string(),
+            root_penalty: a.root_penalty,
+            meta_strength: a.meta_strength,
+            soft_gate_k: a.soft_gate_k,
+            stop_mastery: a.stop_mastery,
+            decay_enabled: a.decay_enabled,
+            decay_half_life_days: a.decay_half_life_days,
+            apply_mapping_penalty: a.apply_mapping_penalty,
+        }
+    }
+}
+
+fn resolve_custom_approach(custom: &CustomApproachConfig) -> DynApproach {
+    let builtin = approach_definitions();
+    let requested_base = custom.base.as_deref().unwrap_or("no_metacognition");
+    let base = builtin
+        .iter()
+        .find(|a| a.id == requested_base)
+        .map(DynApproach::from)
+        .or_else(|| builtin.iter().find(|a| a.id == "no_metacognition").map(DynApproach::from))
+        .unwrap_or_else(|| DynApproach::from(&builtin[0]));
+    DynApproach {
+        id: custom.id.clone(),
+        name: custom.name.clone(),
+        description: custom
+            .description
+            .clone()
+            .unwrap_or_else(|| format!("Custom: {}", custom.id)),
+        lambda: custom.lambda.unwrap_or(base.lambda),
+        readiness_threshold: custom
+            .readiness_threshold
+            .unwrap_or(base.readiness_threshold),
+        min_readiness: custom.min_readiness.unwrap_or(base.min_readiness),
+        readiness_gamma: custom.readiness_gamma.unwrap_or(base.readiness_gamma),
+        readiness_distance_delta: custom
+            .readiness_distance_delta
+            .unwrap_or(base.readiness_distance_delta),
+        ranking_policy: custom
+            .ranking_policy
+            .clone()
+            .unwrap_or(base.ranking_policy),
+        root_penalty: custom.root_penalty.unwrap_or(base.root_penalty),
+        meta_strength: custom.meta_strength.unwrap_or(base.meta_strength),
+        soft_gate_k: custom.soft_gate_k.or(base.soft_gate_k),
+        stop_mastery: custom.stop_mastery.unwrap_or(base.stop_mastery),
+        decay_enabled: base.decay_enabled,
+        decay_half_life_days: base.decay_half_life_days,
+        apply_mapping_penalty: base.apply_mapping_penalty,
+    }
+}
+
+fn snapshot_concept_states(store: &OlmStore) -> Vec<ConceptStateView> {
+    let mut rows: Vec<ConceptStateView> = store
+        .concepts
+        .values()
+        .map(|concept| {
+            let raw = store
+                .concept_state
+                .get(&concept.id)
+                .cloned()
+                .unwrap_or(ConceptState {
+                    alpha: 1.0,
+                    beta: 1.0,
+                    last_update: None,
+                });
+            let effective = decay_state_if_needed(&raw, &store.config);
+            ConceptStateView {
+                concept_id: concept.id.clone(),
+                name: concept.name.clone(),
+                mastery: mastery(&effective),
+                uncertainty: uncertainty(&effective),
+                alpha: effective.alpha,
+                beta: effective.beta,
+                last_update: raw.last_update,
+            }
+        })
+        .collect();
+    rows.sort_by(|a, b| a.concept_id.cmp(&b.concept_id));
+    rows
+}
+
+fn item_from_any_approach<'a>(
+    approach_results: &'a [(String, Vec<NextToStudyItem>)],
+    concept_id: &str,
+) -> Option<&'a NextToStudyItem> {
+    for (_, ranked) in approach_results {
+        if let Some(item) = ranked.iter().find(|i| i.concept_id == concept_id) {
+            return Some(item);
+        }
+    }
+    None
+}
+
+fn build_scenario_comparison(
+    scenario: &ScenarioBlueprint,
+    approach_results: &[(String, Vec<NextToStudyItem>)],
+) -> ScenarioApproachComparison {
+    let mut concept_ids = scenario.concepts.clone();
+    concept_ids.sort();
+
+    let concepts = concept_ids
+        .iter()
+        .map(|cid| {
+            let name = item_from_any_approach(approach_results, cid)
+                .map(|i| i.name.clone())
+                .unwrap_or_else(|| cid.clone());
+
+            let slices = approach_results
+                .iter()
+                .map(|(approach_id, ranked)| {
+                    let idx = ranked.iter().position(|item| &item.concept_id == cid);
+                    let item = ranked.iter().find(|item| &item.concept_id == cid);
+                    ConceptApproachSlice {
+                        approach_id: approach_id.clone(),
+                        rank: idx.map(|i| i + 1),
+                        score: item.map(|i| i.score).unwrap_or(0.0),
+                        mastery: item.map(|i| i.mastery).unwrap_or(0.0),
+                        uncertainty: item.map(|i| i.uncertainty).unwrap_or(0.0),
+                        readiness: item.map(|i| i.readiness).unwrap_or(0.0),
+                        gate_factor: item.map(|i| i.gate_factor).unwrap_or(0.0),
+                        gap: item.map(|i| i.score_decomposition.gap).unwrap_or(0.0),
+                        decay_signal: item
+                            .map(|i| i.score_decomposition.decay_signal)
+                            .unwrap_or(0.0),
+                        inconsistency: item
+                            .map(|i| i.score_decomposition.inconsistency)
+                            .unwrap_or(0.0),
+                        policy_used: item
+                            .map(|i| i.score_decomposition.policy_used.clone())
+                            .unwrap_or_default(),
+                    }
+                })
+                .collect();
+
+            ConceptCrossApproachRow {
+                concept_id: cid.clone(),
+                name,
+                slices,
+            }
+        })
+        .collect();
+
+    ScenarioApproachComparison {
+        scenario_id: scenario.id.clone(),
+        scenario_name: scenario.name.clone(),
+        concepts,
+    }
+}
+
 fn approach_definitions() -> Vec<ApproachConfig> {
     vec![
         ApproachConfig {
-            id: "baseline",
-            name: "Baseline",
-            description: "Sem uso metacognitivo (meta_strength=0)",
+            id: "random_baseline",
+            name: "Random Baseline",
+            description: "Escolha aleatoria de conceito recomendavel",
+            lambda: 0.7,
+            readiness_threshold: 0.5,
+            min_readiness: 0.1,
+            readiness_gamma: 0.35,
+            readiness_distance_delta: 0.85,
+            ranking_policy: "random",
+            root_penalty: 0.12,
+            meta_strength: 0.0,
+            soft_gate_k: Some(1.6),
+            stop_mastery: 0.85,
+            decay_enabled: false,
+            decay_half_life_days: 30.0,
+            apply_mapping_penalty: true,
+        },
+        ApproachConfig {
+            id: "mastery_only",
+            name: "Mastery Only",
+            description: "score = 1 - mastery, sem readiness e sem metacognicao",
+            lambda: 0.7,
+            readiness_threshold: 0.5,
+            min_readiness: 0.0,
+            readiness_gamma: 0.35,
+            readiness_distance_delta: 0.85,
+            ranking_policy: "mastery_only",
+            root_penalty: 0.0,
+            meta_strength: 0.0,
+            soft_gate_k: Some(0.0),
+            stop_mastery: 0.85,
+            decay_enabled: false,
+            decay_half_life_days: 30.0,
+            apply_mapping_penalty: true,
+        },
+        ApproachConfig {
+            id: "uncertainty_only",
+            name: "Uncertainty Only",
+            description: "score = uncertainty, estrategia exploratoria",
+            lambda: 0.7,
+            readiness_threshold: 0.5,
+            min_readiness: 0.0,
+            readiness_gamma: 0.35,
+            readiness_distance_delta: 0.85,
+            ranking_policy: "uncertainty_only",
+            root_penalty: 0.0,
+            meta_strength: 0.0,
+            soft_gate_k: Some(0.0),
+            stop_mastery: 0.85,
+            decay_enabled: false,
+            decay_half_life_days: 30.0,
+            apply_mapping_penalty: true,
+        },
+        ApproachConfig {
+            id: "mastery_only_gated",
+            name: "Mastery Only (Gated)",
+            description: "score = (1-mastery) * readiness^k — ablacao limpa gap vs gap+readiness: balanced com lambda=1.0 para que gate_factor seja aplicado",
+            lambda: 1.0,             // score = gate * gap (sem uncertainty)
+            readiness_threshold: 0.5,
+            min_readiness: 0.1,
+            readiness_gamma: 0.35,
+            readiness_distance_delta: 0.85,
+            ranking_policy: "balanced", // balanced aplica gate_factor = readiness^soft_k
+            root_penalty: 0.0,       // identico a mastery_only para isolar apenas o efeito do gating
+            meta_strength: 0.0,
+            soft_gate_k: Some(1.6),
+            stop_mastery: 0.85,
+            decay_enabled: false,
+            decay_half_life_days: 30.0,
+            apply_mapping_penalty: true,
+        },
+        ApproachConfig {
+            id: "curriculum_linear",
+            name: "Curriculum Linear",
+            description: "Primeiro conceito nao dominado segundo ordem curricular",
+            lambda: 0.7,
+            readiness_threshold: 0.5,
+            min_readiness: 0.0,
+            readiness_gamma: 0.35,
+            readiness_distance_delta: 0.85,
+            ranking_policy: "curriculum_linear",
+            root_penalty: 0.0,
+            meta_strength: 0.0,
+            soft_gate_k: Some(0.0),
+            stop_mastery: 0.85,
+            decay_enabled: false,
+            decay_half_life_days: 30.0,
+            apply_mapping_penalty: true,
+        },
+        ApproachConfig {
+            id: "no_root_penalty",
+            name: "No Root Penalty",
+            description: "Ablacao explicita sem penalizacao para conceitos raiz",
+            lambda: 0.7,
+            readiness_threshold: 0.5,
+            min_readiness: 0.1,
+            readiness_gamma: 0.35,
+            readiness_distance_delta: 0.85,
+            ranking_policy: "balanced",
+            root_penalty: 0.0,
+            meta_strength: 0.0,
+            soft_gate_k: Some(1.6),
+            stop_mastery: 0.85,
+            decay_enabled: false,
+            decay_half_life_days: 30.0,
+            apply_mapping_penalty: true,
+        },
+        ApproachConfig {
+            id: "no_prereq_gating",
+            name: "No Prereq Gating",
+            description: "Mesma logica base sem gating de pre-requisitos",
+            lambda: 0.7,
+            readiness_threshold: 0.5,
+            min_readiness: 0.0,
+            readiness_gamma: 0.35,
+            readiness_distance_delta: 0.85,
+            ranking_policy: "balanced",
+            root_penalty: 0.12,
+            meta_strength: 0.0,
+            soft_gate_k: Some(0.0),
+            stop_mastery: 0.85,
+            decay_enabled: false,
+            decay_half_life_days: 30.0,
+            apply_mapping_penalty: true,
+        },
+        ApproachConfig {
+            id: "no_mapping_penalty",
+            name: "No Mapping Penalty",
+            description: "Ablacao explicita sem penalizacao de qualidade de mapeamento",
             lambda: 0.7,
             readiness_threshold: 0.5,
             min_readiness: 0.1,
@@ -2344,12 +3001,33 @@ fn approach_definitions() -> Vec<ApproachConfig> {
             root_penalty: 0.12,
             meta_strength: 0.0,
             soft_gate_k: Some(1.6),
-            stop_mastery: 0.99,
+            stop_mastery: 0.85,
+            decay_enabled: false,
+            decay_half_life_days: 30.0,
+            apply_mapping_penalty: false,
         },
         ApproachConfig {
-            id: "metacog_balanced",
-            name: "Metacognitive Balanced",
-            description: "Ponderação metacognitiva moderada",
+            id: "no_metacognition",
+            name: "No Metacognition",
+            description: "Ablacao explicita sem sinal metacognitivo",
+            lambda: 0.7,
+            readiness_threshold: 0.5,
+            min_readiness: 0.1,
+            readiness_gamma: 0.35,
+            readiness_distance_delta: 0.85,
+            ranking_policy: "balanced",
+            root_penalty: 0.12,
+            meta_strength: 0.0,
+            soft_gate_k: Some(1.6),
+            stop_mastery: 0.85,
+            decay_enabled: false,
+            decay_half_life_days: 30.0,
+            apply_mapping_penalty: true,
+        },
+        ApproachConfig {
+            id: "metacog_moderate",
+            name: "Metacognition Moderate",
+            description: "Metacognicao moderada (meta_strength=0.6)",
             lambda: 0.7,
             readiness_threshold: 0.5,
             min_readiness: 0.1,
@@ -2359,22 +3037,64 @@ fn approach_definitions() -> Vec<ApproachConfig> {
             root_penalty: 0.12,
             meta_strength: 0.6,
             soft_gate_k: Some(1.6),
-            stop_mastery: 0.99,
+            stop_mastery: 0.85,
+            decay_enabled: false,
+            decay_half_life_days: 30.0,
+            apply_mapping_penalty: true,
         },
         ApproachConfig {
             id: "metacog_strict",
-            name: "Metacognitive Strict",
-            description: "Ponderação metacognitiva forte + gating mais exigente",
-            lambda: 0.65,
-            readiness_threshold: 0.55,
+            name: "Metacognition Strong",
+            description: "Metacognicao forte (meta_strength=1.0), mesmos parametros estruturais que no_metacognition",
+            lambda: 0.7,
+            readiness_threshold: 0.5,
             min_readiness: 0.1,
             readiness_gamma: 0.35,
-            readiness_distance_delta: 0.80,
+            readiness_distance_delta: 0.85,
             ranking_policy: "balanced",
             root_penalty: 0.12,
             meta_strength: 1.0,
-            soft_gate_k: Some(1.8),
-            stop_mastery: 0.99,
+            soft_gate_k: Some(1.6),
+            stop_mastery: 0.85,
+            decay_enabled: false,
+            decay_half_life_days: 30.0,
+            apply_mapping_penalty: true,
+        },
+        ApproachConfig {
+            id: "decay_hl7",
+            name: "Decay HL 7d",
+            description: "Com metacognicao moderada e decay ativo (7 dias)",
+            lambda: 0.7,
+            readiness_threshold: 0.5,
+            min_readiness: 0.1,
+            readiness_gamma: 0.35,
+            readiness_distance_delta: 0.85,
+            ranking_policy: "balanced",
+            root_penalty: 0.12,
+            meta_strength: 0.6,
+            soft_gate_k: Some(1.6),
+            stop_mastery: 0.85,
+            decay_enabled: true,
+            decay_half_life_days: 7.0,
+            apply_mapping_penalty: true,
+        },
+        ApproachConfig {
+            id: "decay_hl30",
+            name: "Decay HL 30d",
+            description: "Com metacognicao moderada e decay ativo (30 dias)",
+            lambda: 0.7,
+            readiness_threshold: 0.5,
+            min_readiness: 0.1,
+            readiness_gamma: 0.35,
+            readiness_distance_delta: 0.85,
+            ranking_policy: "balanced",
+            root_penalty: 0.12,
+            meta_strength: 0.6,
+            soft_gate_k: Some(1.6),
+            stop_mastery: 0.85,
+            decay_enabled: true,
+            decay_half_life_days: 30.0,
+            apply_mapping_penalty: true,
         },
     ]
 }
@@ -2540,6 +3260,20 @@ pub fn olm_map_content_concept(
 }
 
 #[tauri::command]
+pub fn olm_remove_content_concept_maps(
+    state: State<OlmState>,
+    content_id: String,
+) -> Result<usize, String> {
+    let mut store = state.inner.lock().map_err(|_| "State lock poisoned")?;
+    if content_id.trim().is_empty() {
+        return Err("content_id is required".to_string());
+    }
+    let before = store.content_concepts.len();
+    store.content_concepts.retain(|m| m.content_id != content_id);
+    Ok(before - store.content_concepts.len())
+}
+
+#[tauri::command]
 pub fn olm_ingest_event(state: State<OlmState>, event: StudyEvent) -> Result<IngestResult, String> {
     let mut store = state.inner.lock().map_err(|_| "State lock poisoned")?;
     let meta_strength = store.config.meta_strength;
@@ -2637,48 +3371,86 @@ pub fn olm_run_synthetic_scenarios_seeded_with_options(
     options: SimulationOptions,
 ) -> Result<SimulationReport, String> {
     let scenarios = build_simulation_scenarios(seed, &options);
-    let approaches = approach_definitions();
     let (train_split, test_split) = build_calibration_split(&scenarios);
-
-    // Seed now perturbs scenario states (deterministic per seed/scenario), enabling
-    // reproducible variability across multi-seed simulation runs.
     let generated_at = format!("simulated-seed-{}", seed);
 
-    let mut approach_reports = Vec::new();
+    // Build effective approach list: built-in three + any custom ones.
+    let mut approaches: Vec<DynApproach> = if options.custom_approaches_only {
+        vec![]
+    } else {
+        approach_definitions().iter().map(DynApproach::from).collect()
+    };
+    for custom in &options.custom_approaches {
+        approaches.push(resolve_custom_approach(custom));
+    }
+    if approaches.is_empty() {
+        return Err(
+            "No approaches to run. Provide at least one built-in or custom approach.".to_string(),
+        );
+    }
 
-    for approach in approaches.iter() {
+    let mut approach_reports: Vec<SimulationApproachResult> = Vec::new();
+    // Per-scenario per-approach full rankings, used to build the comparison table.
+    let mut comparison_data: HashMap<String, Vec<(String, Vec<NextToStudyItem>)>> = HashMap::new();
+
+    for approach in &approaches {
         let mut scenario_results = Vec::new();
         let mut passed = 0usize;
         let mut hit_at_3_count = 0usize;
         let mut mrr_sum = 0.0;
         let mut ndcg_sum = 0.0;
+        let mut avg_rank_sum = 0.0;
+        let mut longitudinal_gain_sum = 0.0;
+        let mut post_test_sum = 0.0;
+        let mut mastery_gain_sum = 0.0;
+        let mut bad_recs_sum = 0usize;
+        let mut prereq_violation_sum = 0.0;
+        let mut time_to_mastery_values = Vec::new();
 
         for scenario in scenarios.iter() {
             let mut store = OlmStore::default();
-            materialize_scenario(&mut store, scenario, approach)?;
+            materialize_scenario(
+                &mut store,
+                scenario,
+                approach.meta_strength,
+                approach.apply_mapping_penalty,
+            )?;
             apply_seeded_scenario_noise(&mut store, seed, &scenario.id);
+            store.config.decay_enabled = approach.decay_enabled;
+            store.config.decay_half_life_days = approach.decay_half_life_days;
+            store.config.stop_mastery = approach.stop_mastery;
+            // Give random_baseline a reproducible per-(scenario, seed) shuffle seed
+            // so each scenario+seed pair produces a different random ordering.
+            store.config.ranking_seed = Some(seeded_scenario_u64(seed, &scenario.id));
 
             let sim_exclude: HashSet<String> = HashSet::new();
-            let (ranked, diagnostics) = rank_next_to_study(
+            // Rank ALL concepts (no top limit) so full_ranking and comparison are complete.
+            let (all_ranked, diagnostics) = rank_next_to_study(
                 &store,
-                Some(3),
+                None,
                 approach.lambda,
                 approach.readiness_threshold,
                 approach.min_readiness,
                 approach.readiness_gamma,
                 approach.readiness_distance_delta,
-                approach.ranking_policy,
+                &approach.ranking_policy,
                 approach.soft_gate_k,
                 approach.root_penalty,
                 approach.stop_mastery,
                 &sim_exclude,
                 None,
             );
-            let top_recommendation = ranked.first().map(|item| item.concept_id.clone());
+
+            let concept_states = snapshot_concept_states(&store);
+            let (avg_mastery, avg_uncertainty) = average_state(&store);
+
+            let top_recommendation = all_ranked.first().map(|item| item.concept_id.clone());
             let top_recommendations: Vec<String> =
-                ranked.iter().map(|item| item.concept_id.clone()).collect();
+                all_ranked.iter().take(3).map(|item| item.concept_id.clone()).collect();
             let (rank_of_first_expected, pass, hit_at_3, mrr, ndcg_at_3) =
-                scenario_ranking_metrics(&ranked, &scenario.expected_any);
+                scenario_ranking_metrics(&all_ranked, &scenario.expected_any);
+            let avg_rank_expected = average_rank_of_expected(&all_ranked, &scenario.expected_any);
+            let long_metrics = simulate_longitudinal_cycles(scenario, approach, seed)?;
 
             if pass {
                 passed += 1;
@@ -2688,13 +3460,34 @@ pub fn olm_run_synthetic_scenarios_seeded_with_options(
             }
             mrr_sum += mrr;
             ndcg_sum += ndcg_at_3;
+            avg_rank_sum += avg_rank_expected;
+            longitudinal_gain_sum += long_metrics.learning_gain;
+            post_test_sum += long_metrics.post_test_score;
+            mastery_gain_sum += long_metrics.mastery_gain;
+            bad_recs_sum += long_metrics.number_of_bad_recommendations;
+            prereq_violation_sum += long_metrics.prerequisite_violation_rate;
+            if let Some(ttm) = long_metrics.time_to_mastery {
+                time_to_mastery_values.push(ttm as f64);
+            }
 
-            let (avg_mastery, avg_uncertainty) = average_state(&store);
+            // Collect for comparison table (full, untruncated).
+            comparison_data
+                .entry(scenario.id.clone())
+                .or_default()
+                .push((approach.id.clone(), all_ranked.clone()));
+
+            // Apply top_n limit to what we store in full_ranking.
+            let full_ranking = if options.top_n == 0 {
+                all_ranked
+            } else {
+                all_ranked.into_iter().take(options.top_n).collect()
+            };
 
             scenario_results.push(SimulationScenarioResult {
-                scenario_id: scenario.id.to_string(),
-                scenario_name: scenario.name.to_string(),
+                scenario_id: scenario.id.clone(),
+                scenario_name: scenario.name.clone(),
                 expected_any: scenario.expected_any.clone(),
+                true_weak_concepts: expected_any_from_true_mastery(&scenario.true_mastery, &scenario.edges),
                 scenario_metadata: scenario.metadata.clone(),
                 top_recommendation,
                 top_recommendations,
@@ -2706,8 +3499,15 @@ pub fn olm_run_synthetic_scenarios_seeded_with_options(
                 avg_mastery,
                 avg_uncertainty,
                 diagnostics,
+                average_rank_of_expected: avg_rank_expected,
+                learning_gain: long_metrics.learning_gain,
+                post_test_score: long_metrics.post_test_score,
+                mastery_gain: long_metrics.mastery_gain,
+                time_to_mastery: long_metrics.time_to_mastery,
+                number_of_bad_recommendations: long_metrics.number_of_bad_recommendations,
+                prerequisite_violation_rate: long_metrics.prerequisite_violation_rate,
                 notes: format!(
-                    "approach={}, lambda={:.2}, threshold={:.2}, min_readiness={:.2}, readiness_gamma={:.2}, root_penalty={:.2}, meta_strength={:.2}, soft_gate_k={}",
+                    "approach={}, lambda={:.2}, threshold={:.2}, min_readiness={:.2}, readiness_gamma={:.2}, root_penalty={:.2}, meta_strength={:.2}, soft_gate_k={}, decay_enabled={}, decay_half_life_days={:.1}",
                     approach.id,
                     approach.lambda,
                     approach.readiness_threshold,
@@ -2718,30 +3518,38 @@ pub fn olm_run_synthetic_scenarios_seeded_with_options(
                     approach
                         .soft_gate_k
                         .map(|k| format!("{:.2}", k))
-                        .unwrap_or_else(|| "none".to_string())
+                        .unwrap_or_else(|| "none".to_string()),
+                    approach.decay_enabled,
+                    approach.decay_half_life_days
                 ),
+                full_ranking,
+                concept_states,
             });
         }
 
-        let pass_rate = if scenarios.is_empty() {
+        let n = scenarios.len();
+        let pass_rate = if n == 0 { 0.0 } else { passed as f64 / n as f64 };
+        let hit_at_3_rate = if n == 0 { 0.0 } else { hit_at_3_count as f64 / n as f64 };
+        let avg_mrr = if n == 0 { 0.0 } else { mrr_sum / n as f64 };
+        let avg_ndcg_at_3 = if n == 0 { 0.0 } else { ndcg_sum / n as f64 };
+        let avg_rank_expected = if n == 0 { 0.0 } else { avg_rank_sum / n as f64 };
+        let avg_learning_gain = if n == 0 { 0.0 } else { longitudinal_gain_sum / n as f64 };
+        let avg_post_test_score = if n == 0 { 0.0 } else { post_test_sum / n as f64 };
+        let avg_mastery_gain = if n == 0 { 0.0 } else { mastery_gain_sum / n as f64 };
+        let avg_bad_recommendations = if n == 0 {
             0.0
         } else {
-            passed as f64 / scenarios.len() as f64
+            bad_recs_sum as f64 / n as f64
         };
-        let hit_at_3_rate = if scenarios.is_empty() {
+        let prereq_violation_rate = if n == 0 {
             0.0
         } else {
-            hit_at_3_count as f64 / scenarios.len() as f64
+            prereq_violation_sum / n as f64
         };
-        let avg_mrr = if scenarios.is_empty() {
-            0.0
+        let avg_time_to_mastery = if time_to_mastery_values.is_empty() {
+            None
         } else {
-            mrr_sum / scenarios.len() as f64
-        };
-        let avg_ndcg_at_3 = if scenarios.is_empty() {
-            0.0
-        } else {
-            ndcg_sum / scenarios.len() as f64
+            Some(time_to_mastery_values.iter().sum::<f64>() / (time_to_mastery_values.len() as f64))
         };
 
         let (train_pass_rate, _, train_avg_mrr, _) =
@@ -2750,20 +3558,69 @@ pub fn olm_run_synthetic_scenarios_seeded_with_options(
             aggregate_subset_metrics(&scenario_results, &test_split);
 
         approach_reports.push(SimulationApproachResult {
-            approach_id: approach.id.to_string(),
-            approach_name: approach.name.to_string(),
-            description: approach.description.to_string(),
+            approach_id: approach.id.clone(),
+            approach_name: approach.name.clone(),
+            description: approach.description.clone(),
+            hit_at_1_rate: pass_rate,
             pass_rate,
             hit_at_3_rate,
             avg_mrr,
             avg_ndcg_at_3,
+            average_rank_of_expected: avg_rank_expected,
             train_pass_rate,
             test_pass_rate,
             train_avg_mrr,
             test_avg_mrr,
+            random_baseline_delta: 0.0,
+            mastery_baseline_delta: 0.0,
+            uncertainty_baseline_delta: 0.0,
+            metacognition_rank_shift: 0.0,
+            avg_learning_gain,
+            avg_post_test_score,
+            avg_mastery_gain,
+            avg_time_to_mastery,
+            avg_bad_recommendations,
+            prerequisite_violation_rate: prereq_violation_rate,
             scenarios: scenario_results,
         });
     }
+
+    let random_baseline = approach_reports
+        .iter()
+        .find(|r| r.approach_id == "random_baseline")
+        .map(|r| r.hit_at_1_rate)
+        .unwrap_or(0.0);
+    let mastery_baseline = approach_reports
+        .iter()
+        .find(|r| r.approach_id == "mastery_only")
+        .map(|r| r.hit_at_1_rate)
+        .unwrap_or(0.0);
+    let uncertainty_baseline = approach_reports
+        .iter()
+        .find(|r| r.approach_id == "uncertainty_only")
+        .map(|r| r.hit_at_1_rate)
+        .unwrap_or(0.0);
+    let no_meta_rank = approach_reports
+        .iter()
+        .find(|r| r.approach_id == "no_metacognition")
+        .map(|r| r.average_rank_of_expected)
+        .unwrap_or(0.0);
+
+    for report in &mut approach_reports {
+        report.random_baseline_delta = report.hit_at_1_rate - random_baseline;
+        report.mastery_baseline_delta = report.hit_at_1_rate - mastery_baseline;
+        report.uncertainty_baseline_delta = report.hit_at_1_rate - uncertainty_baseline;
+        report.metacognition_rank_shift = no_meta_rank - report.average_rank_of_expected;
+    }
+
+    // Build cross-approach comparison table now that all approaches have run.
+    let scenario_comparisons: Vec<ScenarioApproachComparison> = scenarios
+        .iter()
+        .map(|scenario| {
+            let rankings = comparison_data.remove(&scenario.id).unwrap_or_default();
+            build_scenario_comparison(scenario, &rankings)
+        })
+        .collect();
 
     let best_approach_id = approach_reports
         .iter()
@@ -2820,6 +3677,7 @@ pub fn olm_run_synthetic_scenarios_seeded_with_options(
         approaches: approach_reports,
         best_approach_id,
         calibration,
+        scenario_comparisons,
     })
 }
 
@@ -4055,5 +4913,309 @@ mod tests {
         assert!(scenarios
             .iter()
             .all(|scenario| scenario.metadata.mode == "baseline"));
+    }
+
+    #[test]
+    fn test_remove_content_concept_maps_retain_logic() {
+        let mut store = OlmStore::default();
+        store.content_concepts.push(ContentConceptMap {
+            content_id: "doc/a.md".to_string(),
+            concept_id: "c1".to_string(),
+            coverage_weight: 1.0,
+        });
+        store.content_concepts.push(ContentConceptMap {
+            content_id: "doc/a.md".to_string(),
+            concept_id: "c2".to_string(),
+            coverage_weight: 1.0,
+        });
+        store.content_concepts.push(ContentConceptMap {
+            content_id: "doc/b.md".to_string(),
+            concept_id: "c3".to_string(),
+            coverage_weight: 1.0,
+        });
+
+        store.content_concepts.retain(|m| m.content_id != "doc/a.md");
+
+        assert_eq!(store.content_concepts.len(), 1);
+        assert_eq!(store.content_concepts[0].content_id, "doc/b.md");
+    }
+
+    #[test]
+    fn test_ingest_uses_mapping_quality_penalty_for_content_only_mapping() {
+        let mut store = OlmStore::default();
+        store.concepts.insert(
+            "c1".to_string(),
+            Concept {
+                id: "c1".to_string(),
+                name: "C1".to_string(),
+                description: None,
+            },
+        );
+        store.concepts.insert(
+            "c2".to_string(),
+            Concept {
+                id: "c2".to_string(),
+                name: "C2".to_string(),
+                description: None,
+            },
+        );
+        store.content_items.insert(
+            "doc/a.md".to_string(),
+            ContentItem {
+                id: "doc/a.md".to_string(),
+                item_type: "note".to_string(),
+                title: "A".to_string(),
+                domain_id: Some("root".to_string()),
+            },
+        );
+        store.content_concepts.push(ContentConceptMap {
+            content_id: "doc/a.md".to_string(),
+            concept_id: "c1".to_string(),
+            coverage_weight: 0.95,
+        });
+        store.content_concepts.push(ContentConceptMap {
+            content_id: "doc/a.md".to_string(),
+            concept_id: "c2".to_string(),
+            coverage_weight: 0.05,
+        });
+
+        let event = StudyEvent {
+            event_id: "evt-quality-1".to_string(),
+            timestamp: "2026-01-01T00:00:00Z".to_string(),
+            source: "test".to_string(),
+            event_type: "quiz_attempt".to_string(),
+            content_id: Some("doc/a.md".to_string()),
+            concept_ids: vec![],
+            payload: json!({"correct": 1.0, "total": 1.0, "confidence": 1.0}),
+        };
+
+        ingest_into_store(&mut store, &event, 0.0).unwrap();
+
+        let applied_c1 = store
+            .evidence
+            .get("c1")
+            .and_then(|rows| rows.last())
+            .map(|row| row.applied_weight)
+            .unwrap_or(0.0);
+        let applied_c2 = store
+            .evidence
+            .get("c2")
+            .and_then(|rows| rows.last())
+            .map(|row| row.applied_weight)
+            .unwrap_or(0.0);
+
+        let quality_penalty = content_mapping_quality(1.0, 2).penalty;
+        // With meta=0 and confidence=1, only safety gate and mapping quality affect weight.
+        // The dominant concept should reflect the quality penalty factor.
+        assert!(applied_c1 > 0.0);
+        assert!(applied_c2 > 0.0);
+        assert!(quality_penalty < 1.0);
+        assert!(applied_c1 < 1.0, "quality penalty and safety should bound applied weight");
+    }
+
+    #[test]
+    fn test_ingest_explicit_concepts_bypass_mapping_quality_penalty() {
+        let mut store = OlmStore::default();
+        store.concepts.insert(
+            "c1".to_string(),
+            Concept {
+                id: "c1".to_string(),
+                name: "C1".to_string(),
+                description: None,
+            },
+        );
+
+        let event = StudyEvent {
+            event_id: "evt-explicit-1".to_string(),
+            timestamp: "2026-01-01T00:00:00Z".to_string(),
+            source: "test".to_string(),
+            event_type: "quiz_attempt".to_string(),
+            content_id: Some("doc/a.md".to_string()),
+            concept_ids: vec!["c1".to_string()],
+            payload: json!({"correct": 1.0, "total": 1.0, "confidence": 1.0}),
+        };
+
+        ingest_into_store(&mut store, &event, 0.0).unwrap();
+
+        let applied = store
+            .evidence
+            .get("c1")
+            .and_then(|rows| rows.last())
+            .map(|row| row.applied_weight)
+            .unwrap_or(0.0);
+        assert!(applied > 0.0);
+    }
+
+    // ── Fix 3: olm_remove_content_concept_maps ──────────────────────────────
+
+    #[test]
+    fn test_remove_content_concept_maps_removes_only_target_content() {
+        let mut store = OlmStore::default();
+        store.content_concepts.push(ContentConceptMap {
+            content_id: "file-a".to_string(),
+            concept_id: "c1".to_string(),
+            coverage_weight: 1.0,
+        });
+        store.content_concepts.push(ContentConceptMap {
+            content_id: "file-a".to_string(),
+            concept_id: "c2".to_string(),
+            coverage_weight: 0.5,
+        });
+        store.content_concepts.push(ContentConceptMap {
+            content_id: "file-b".to_string(),
+            concept_id: "c1".to_string(),
+            coverage_weight: 0.8,
+        });
+
+        let before = store.content_concepts.len();
+        store.content_concepts.retain(|m| m.content_id != "file-a");
+        let removed = before - store.content_concepts.len();
+
+        assert_eq!(removed, 2, "should remove both file-a entries");
+        assert_eq!(store.content_concepts.len(), 1, "file-b entry should remain");
+        assert_eq!(store.content_concepts[0].content_id, "file-b");
+    }
+
+    #[test]
+    fn test_remove_content_concept_maps_noop_on_unknown_content() {
+        let mut store = OlmStore::default();
+        store.content_concepts.push(ContentConceptMap {
+            content_id: "file-a".to_string(),
+            concept_id: "c1".to_string(),
+            coverage_weight: 1.0,
+        });
+        let before = store.content_concepts.len();
+        store.content_concepts.retain(|m| m.content_id != "unknown-file");
+        assert_eq!(store.content_concepts.len(), before, "nothing removed for unknown content_id");
+    }
+
+    // ── Fix 4: mapping quality penalty on ingest ─────────────────────────────
+
+    #[test]
+    fn test_ingest_with_content_id_applies_quality_penalty() {
+        let build_store = || {
+            let mut store = OlmStore::default();
+            store.concepts.insert(
+                "c1".to_string(),
+                Concept { id: "c1".to_string(), name: "C1".to_string(), description: None },
+            );
+            store.content_items.insert(
+                "file-a".to_string(),
+                ContentItem {
+                    id: "file-a".to_string(),
+                    item_type: "note".to_string(),
+                    title: "File A".to_string(),
+                    domain_id: None,
+                },
+            );
+            // Single-concept mapping -> raw_weight_sum = 1.0, breadth = 0.6 -> quality = 0.88 -> penalty = 0.946
+            store.content_concepts.push(ContentConceptMap {
+                content_id: "file-a".to_string(),
+                concept_id: "c1".to_string(),
+                coverage_weight: 1.0,
+            });
+            store
+        };
+
+        // Event via explicit concept_ids (Tier 1) — no quality penalty applied
+        let event_tier1 = StudyEvent {
+            event_id: "tier1-1".to_string(),
+            timestamp: "2026-01-01T00:00:00Z".to_string(),
+            source: "test".to_string(),
+            event_type: "review".to_string(),
+            content_id: Some("file-a".to_string()),
+            concept_ids: vec!["c1".to_string()],
+            payload: json!({}),
+        };
+
+        // Event via content_id only (Tier 2) — quality penalty should reduce applied_weight
+        let event_tier2 = StudyEvent {
+            event_id: "tier2-1".to_string(),
+            timestamp: "2026-01-01T00:00:01Z".to_string(),
+            source: "test".to_string(),
+            event_type: "review".to_string(),
+            content_id: Some("file-a".to_string()),
+            concept_ids: vec![],
+            payload: json!({}),
+        };
+
+        let mut store1 = build_store();
+        let mut store2 = build_store();
+        ingest_into_store(&mut store1, &event_tier1, 0.0).unwrap();
+        ingest_into_store(&mut store2, &event_tier2, 0.0).unwrap();
+
+        let evidence1 = store1.evidence.get("c1").unwrap();
+        let evidence2 = store2.evidence.get("c1").unwrap();
+
+        assert!(
+            evidence2[0].applied_weight < evidence1[0].applied_weight,
+            "Tier 2 (content_id mapping) should have lower applied_weight than Tier 1 (explicit concept_ids) due to quality penalty. tier2={:.4} tier1={:.4}",
+            evidence2[0].applied_weight,
+            evidence1[0].applied_weight,
+        );
+    }
+
+    #[test]
+    fn test_quality_penalty_breadth_increases_with_more_concepts() {
+        // Verify the existing content_mapping_quality breadth logic:
+        // 1 concept → penalty lower than 3 concepts
+        let q1 = content_mapping_quality(1.0, 1);
+        let q3 = content_mapping_quality(1.0, 3);
+        assert!(
+            q3.penalty > q1.penalty,
+            "more concepts should yield higher quality penalty (less penalised): q1={:.3} q3={:.3}",
+            q1.penalty,
+            q3.penalty
+        );
+    }
+
+    // ── Fix 1: coverage_weight passthrough ───────────────────────────────────
+
+    #[test]
+    fn test_custom_coverage_weight_stored_and_normalised() {
+        let mut store = OlmStore::default();
+        store.concepts.insert(
+            "c1".to_string(),
+            Concept { id: "c1".to_string(), name: "C1".to_string(), description: None },
+        );
+        store.concepts.insert(
+            "c2".to_string(),
+            Concept { id: "c2".to_string(), name: "C2".to_string(), description: None },
+        );
+        store.content_items.insert(
+            "note".to_string(),
+            ContentItem {
+                id: "note".to_string(),
+                item_type: "note".to_string(),
+                title: "Note".to_string(),
+                domain_id: None,
+            },
+        );
+        store.content_concepts.push(ContentConceptMap {
+            content_id: "note".to_string(),
+            concept_id: "c1".to_string(),
+            coverage_weight: 0.8,
+        });
+        store.content_concepts.push(ContentConceptMap {
+            content_id: "note".to_string(),
+            concept_id: "c2".to_string(),
+            coverage_weight: 0.2,
+        });
+
+        let maps = normalize_maps(&store, &StudyEvent {
+            event_id: "e1".to_string(),
+            timestamp: "2026-01-01T00:00:00Z".to_string(),
+            source: "test".to_string(),
+            event_type: "review".to_string(),
+            content_id: Some("note".to_string()),
+            concept_ids: vec![],
+            payload: json!({}),
+        });
+
+        let c1_weight = maps.iter().find(|(id, _)| id == "c1").map(|(_, w)| *w).unwrap();
+        let c2_weight = maps.iter().find(|(id, _)| id == "c2").map(|(_, w)| *w).unwrap();
+
+        assert!((c1_weight - 0.8).abs() < 1e-9, "c1 weight should be 0.8 after normalisation, got {}", c1_weight);
+        assert!((c2_weight - 0.2).abs() < 1e-9, "c2 weight should be 0.2 after normalisation, got {}", c2_weight);
     }
 }

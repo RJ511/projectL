@@ -21,6 +21,7 @@ fn main() {
             commands::olm::olm_upsert_content_item,
             commands::olm::olm_map_content_concept,
             commands::olm::olm_ingest_event,
+            commands::olm::olm_remove_content_concept_maps,
             commands::olm::olm_get_state,
             commands::olm::olm_get_content_metrics,
             commands::olm::olm_next_content_to_study,
