@@ -42,6 +42,7 @@ Este e o documento tecnico canonico para arquitetura, logica OLM e decisoes de i
 - `src/components/olm/OlmPanel.jsx`
 - Operacoes manuais OLM (ingestao, explain, ranking, debug).
 - Visualizacao interativa de grafo de conceitos/arestas com filtro textual, arestas direcionais e selecao de conceito para abrir evidencias + ficheiros associados.
+- Transparencia no painel: `Next` apresenta `why` e a decomposicao do score ja devolvidos pelo backend; `Evidence` cruza cada `EvidenceChunk` com o respetivo `StudyEvent` para explicar origem, resultado, peso e impacto antes dos valores tecnicos `delta_alpha/delta_beta`.
 - Largura do painel ajustavel por drag na borda/canto direito para melhor encaixe no layout.
 
 - `src/components/settings/AppSettingsPanel.jsx`

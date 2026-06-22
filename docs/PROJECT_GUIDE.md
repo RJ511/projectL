@@ -61,8 +61,8 @@ O painel **OLM** permite gerir o modelo de aprendizagem:
 - **Painel OLM ajustável**: arrasta com o rato na borda direita ou no canto inferior direito para personalizar a largura do painel.
 - **Evento**: injeta eventos manuais (`practice_attempt`, `quiz_attempt`, etc.).
 - **Estado**: mostra `mastery` e `uncertainty` por conceito.
-- **Next to study**: recomendações com justificações.
-- **Explicação**: rasto de evidências por conceito.
+- **Next to study**: recomendações ordenadas com a razão principal visível, prontidão, domínio e incerteza; o detalhe expansível apresenta todos os fatores usados pelo ranking e a política ativa.
+- **Explicação**: rasto de evidências por conceito em linguagem humana (conteúdo, momento, sinal observado, peso, confiança e duração); `alpha`/`beta` permanecem disponíveis apenas no detalhe técnico.
 
 Como usar o filtro do grafo:
 
@@ -74,6 +74,7 @@ Interação adicional:
 
 1. Clica num nó no grafo para abrir as evidências desse conceito no bloco **Evidence**.
 2. No mesmo bloco, vês os ficheiros atualmente mapeados para esse conceito.
+3. Expande **Ver cálculo técnico** apenas quando precisares de auditar os incrementos Beta; a interpretação pedagógica aparece primeiro.
 
 ## 5) Eventos automáticos já integrados
 

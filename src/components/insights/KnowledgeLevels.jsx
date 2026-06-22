@@ -3,10 +3,10 @@ import { nextContentToStudy } from "../../services/olm.service";
 import { getRootStateValue } from "../../services/rootDataStore";
 
 const EMO_QUOTES = [
-  "Small steps still move you forward.",
-  "Consistency beats intensity.",
-  "Progress today, clarity tomorrow.",
-  "You don’t need perfect — just present.",
+  "Pequenos passos ainda te fazem mover.",
+  "Consistência vence intensidade.",
+  "Ao longo do céu e da Terra, apenas eu sou o Ilustre.",
+  "Não precisas de fazer perfeito — só fazer.",
 ];
 
 function dailyQuote() {
@@ -296,9 +296,6 @@ export default function KnowledgeLevels({
             {domainCompletionStats
               ? `${Math.round(domainCompletionStats.avg * 100)}% em ${domainCompletionStats.count} recurso(s)`
               : "Sem dados"}
-          </div>
-          <div style={{ color: "#64748b", fontSize: 12 }}>
-            O editor só aparece quando entrares num item (ficheiro).
           </div>
           {lastOpenedItem ? (
             <div style={{ color: "#64748b", fontSize: 12 }}>

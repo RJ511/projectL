@@ -116,11 +116,13 @@ Também é possível declarar conceitos inline no conteúdo com `;;;conceito;;;`
 
 ### O que o concept influencia
 
-1. Estado OLM por conceito (`alpha`, `beta`, `mastery`, `uncertainty`).
+1. Estado OLM por conceito (`alpha`, `beta`, `mastery`, `uncertainty`); na interface estes campos são apresentados como evidência favorável ao domínio, evidência de dificuldade, domínio estimado e incerteza da estimativa.
 2. Ranking `next_to_study` e justificações (`why`).
 3. Explainability (`evidence` por conceito).
 4. Readiness por pré-requisitos e efeito das arestas `prereq -> target`.
 5. Filtro por domínio (`domain_filter`) e diagnóstico de ranking (`debug`).
+
+Caso académico reproduzível: `cargo run --bin python_domain_demo -- --out ../docs/reports/python-domain-demonstration.json`. O relatório associado está em `docs/reports/python-domain-demonstration.md`.
 
 ## 4.3 Eventos automáticos e analytics
 

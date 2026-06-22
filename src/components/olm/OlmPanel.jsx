@@ -25,6 +25,44 @@ function barStyle(value, tone = "#3b82f6") {
   };
 }
 
+function asPercent(value, digits = 0) {
+  const number = Number(value);
+  if (!Number.isFinite(number)) return "—";
+  return `${(Math.max(0, Math.min(1, number)) * 100).toFixed(digits)}%`;
+}
+
+function eventLabel(eventType) {
+  const labels = {
+    review: "Revisão do conteúdo",
+    practice_attempt: "Tentativa prática",
+    quiz: "Questionário",
+    test: "Teste",
+    self_assessment: "Autoavaliação",
+  };
+  return labels[eventType] || String(eventType || "Evidência").replaceAll("_", " ");
+}
+
+function evidenceInterpretation(evidence) {
+  const score = Number(evidence?.score);
+  const weight = Number(evidence?.applied_weight);
+
+  let direction = "O resultado foi neutro e não altera muito a estimativa de domínio.";
+  if (Number.isFinite(score) && score >= 0.6) {
+    direction = "O resultado reforça a estimativa de domínio deste conceito.";
+  } else if (Number.isFinite(score) && score <= 0.4) {
+    direction = "O resultado indica que este conceito ainda precisa de revisão.";
+  }
+
+  let strength = "Impacto ainda não quantificado.";
+  if (Number.isFinite(weight)) {
+    if (weight < 0.02) strength = "Impacto muito pequeno no modelo.";
+    else if (weight < 0.08) strength = "Impacto moderado no modelo.";
+    else strength = "Impacto forte no modelo.";
+  }
+
+  return `${direction} ${strength}`;
+}
+
 export default function OlmPanel({
   open = false,
   onToggle,
@@ -49,6 +87,7 @@ export default function OlmPanel({
   const [contentMetrics, setContentMetrics] = useState([]);
   const [graphFilter, setGraphFilter] = useState("");
   const [conceptFilesById, setConceptFilesById] = useState({});
+  const [studyEventsById, setStudyEventsById] = useState({});
   const [selectedExplainId, setSelectedExplainId] = useState("");
   const [explainRows, setExplainRows] = useState([]);
   const [error, setError] = useState("");
@@ -291,6 +330,9 @@ export default function OlmPanel({
       const contentConcepts = Array.isArray(olmSnapshot?.content_concepts)
         ? olmSnapshot.content_concepts
         : [];
+      const studyEvents = Array.isArray(olmSnapshot?.study_events)
+        ? olmSnapshot.study_events
+        : [];
 
       for (const map of contentConcepts) {
         const conceptKey = String(map?.concept_id || "");
@@ -320,6 +362,13 @@ export default function OlmPanel({
       setRecommendations(nextList);
       setContentMetrics(filteredMetrics);
       setConceptFilesById(nextConceptFiles);
+      setStudyEventsById(
+        Object.fromEntries(
+          studyEvents
+            .filter((event) => event?.event_id)
+            .map((event) => [event.event_id, event]),
+        ),
+      );
     } catch (e) {
       setError(String(e));
     }
@@ -573,7 +622,9 @@ export default function OlmPanel({
                   padding: 6,
                 }}
               >
-                <div style={{ fontSize: 11, color: "#64748b" }}>Mastery</div>
+                <div style={{ fontSize: 11, color: "#64748b" }}>
+                  Domínio estimado
+                </div>
                 <div style={{ fontWeight: 700, fontSize: 13 }}>
                   {(summary.avgMastery * 100).toFixed(0)}%
                 </div>
@@ -587,7 +638,9 @@ export default function OlmPanel({
                   padding: 6,
                 }}
               >
-                <div style={{ fontSize: 11, color: "#64748b" }}>Unc.</div>
+                <div style={{ fontSize: 11, color: "#64748b" }}>
+                  Incerteza
+                </div>
                 <div style={{ fontWeight: 700, fontSize: 13 }}>
                   {(summary.avgUncertainty * 100).toFixed(0)}%
                 </div>
@@ -657,7 +710,7 @@ export default function OlmPanel({
                         color: row.uncertainty > 0.35 ? "#b91c1c" : "#166534",
                       }}
                     >
-                      u {(row.uncertainty * 100).toFixed(0)}%
+                      Incerteza {(row.uncertainty * 100).toFixed(0)}%
                     </span>
                   </div>
                   <div
@@ -687,7 +740,7 @@ export default function OlmPanel({
               boxSizing: "border-box",
             }}
           >
-            <strong style={{ fontSize: 12 }}>Item Metrics</strong>
+            <strong style={{ fontSize: 12 }}>Desempenho por conteúdo</strong>
             {contentMetrics.length === 0 ? (
               <div style={{ fontSize: 12, color: "#6b7280" }}>
                 Sem métricas de conteúdo ainda.
@@ -720,7 +773,7 @@ export default function OlmPanel({
                     </div>
                     <div style={{ fontSize: 10, color: "#64748b" }}>
                       tentativas: {metric.attempts} · sucesso:{" "}
-                      {(metric.success_rate * 100).toFixed(0)}% · score médio:{" "}
+                      {(metric.success_rate * 100).toFixed(0)}% · desempenho médio:{" "}
                       {(metric.avg_score * 100).toFixed(0)}%
                     </div>
                   </div>
@@ -750,14 +803,17 @@ export default function OlmPanel({
                 Sem recomendações.
               </div>
             ) : (
-              recommendations.map((item) => (
+              recommendations.map((item, index) => (
                 <div
                   key={item.concept_id}
                   style={{
-                    padding: 7,
+                    padding: 8,
                     borderRadius: 8,
-                    border: "1px solid #e2e8f0",
-                    background: "#f8fbff",
+                    border:
+                      index === 0
+                        ? "1px solid #7dd3fc"
+                        : "1px solid #e2e8f0",
+                    background: index === 0 ? "#f0f9ff" : "#f8fbff",
                   }}
                 >
                   <div
@@ -769,17 +825,30 @@ export default function OlmPanel({
                       fontSize: 11,
                     }}
                   >
-                    <strong
-                      style={{
-                        fontSize: 12,
-                        minWidth: 0,
-                        overflowWrap: "anywhere",
-                        wordBreak: "break-word",
-                      }}
-                    >
-                      {item.name}
-                    </strong>
-                    <span>{(item.score * 100).toFixed(0)}%</span>
+                    <div style={{ display: "flex", gap: 5, minWidth: 0 }}>
+                      <span
+                        style={{
+                          color: "#0369a1",
+                          fontWeight: 800,
+                          flexShrink: 0,
+                        }}
+                      >
+                        #{index + 1}
+                      </span>
+                      <strong
+                        style={{
+                          fontSize: 12,
+                          minWidth: 0,
+                          overflowWrap: "anywhere",
+                          wordBreak: "break-word",
+                        }}
+                      >
+                        {item.name}
+                      </strong>
+                    </div>
+                    <span title="Pontuação final da recomendação">
+                      {asPercent(item.score)}
+                    </span>
                   </div>
                   <div
                     style={{
@@ -790,6 +859,76 @@ export default function OlmPanel({
                   >
                     <div style={barStyle(item.score, "#0ea5e9")} />
                   </div>
+                  <div
+                    style={{
+                      marginTop: 6,
+                      fontSize: 11,
+                      lineHeight: 1.35,
+                      color: "#334155",
+                    }}
+                  >
+                    {item.why?.[0] ||
+                      "Escolhido pela combinação de prontidão e necessidade de aprendizagem."}
+                  </div>
+                  <div
+                    style={{
+                      display: "flex",
+                      flexWrap: "wrap",
+                      gap: 4,
+                      marginTop: 6,
+                      fontSize: 10,
+                    }}
+                  >
+                    <span title="Quanto os pré-requisitos permitem avançar">
+                      Prontidão {asPercent(item.readiness)}
+                    </span>
+                    <span>·</span>
+                    <span title="Estimativa atual de conhecimento">
+                      Domínio {asPercent(item.mastery)}
+                    </span>
+                    <span>·</span>
+                    <span title="Incerteza da estimativa">
+                      Incerteza {asPercent(item.uncertainty)}
+                    </span>
+                  </div>
+                  <details style={{ marginTop: 6, fontSize: 10 }}>
+                    <summary
+                      style={{
+                        cursor: "pointer",
+                        color: "#0369a1",
+                        fontWeight: 700,
+                      }}
+                    >
+                      Porque é esta uma boa opção?
+                    </summary>
+                    <ul
+                      style={{
+                        margin: "6px 0 0",
+                        paddingLeft: 17,
+                        color: "#475569",
+                        lineHeight: 1.4,
+                      }}
+                    >
+                      {(item.why || []).map((reason, reasonIndex) => (
+                        <li key={`${item.concept_id}-reason-${reasonIndex}`}>
+                          {reason}
+                        </li>
+                      ))}
+                    </ul>
+                    <div
+                      style={{
+                        marginTop: 5,
+                        padding: 5,
+                        borderRadius: 6,
+                        background: "#e0f2fe",
+                        color: "#0c4a6e",
+                      }}
+                    >
+                      Pontuação final {asPercent(item.score, 1)} · política{" "}
+                      {item.score_decomposition?.policy_used || "adaptativa"} ·{" "}
+                      {item.event_count || 0} evidência(s)
+                    </div>
+                  </details>
                 </div>
               ))
             )}
@@ -1162,29 +1301,153 @@ export default function OlmPanel({
                 Sem evidências.
               </div>
             ) : (
-              explainRows.map((evidence) => (
-                <div
-                  key={evidence.event_id + evidence.created_at}
-                  style={{
-                    fontSize: 11,
-                    background: "#f8fbff",
-                    border: "1px solid #e2e8f0",
-                    borderRadius: 8,
-                    padding: 5,
-                  }}
-                >
+              explainRows.map((evidence) => {
+                const studyEvent = studyEventsById[evidence.event_id] || {};
+                const payload = studyEvent.payload || {};
+                const contentLabel =
+                  studyEvent.content_id || payload.file_path || "";
+                const score = Number(evidence.score);
+                const confidenceValue = Number(payload.confidence);
+                const durationSec = Number(payload.duration_sec);
+
+                return (
                   <div
-                    style={{ display: "flex", justifyContent: "space-between" }}
+                    key={evidence.event_id + evidence.created_at}
+                    style={{
+                      fontSize: 11,
+                      background: "#f8fbff",
+                      border: "1px solid #e2e8f0",
+                      borderRadius: 8,
+                      padding: 7,
+                    }}
                   >
-                    <strong>{evidence.event_type.replace("_", " ")}</strong>
-                    <span>{evidence.created_at.slice(11, 16)}</span>
+                    <div
+                      style={{
+                        display: "flex",
+                        justifyContent: "space-between",
+                        gap: 8,
+                      }}
+                    >
+                      <strong>{eventLabel(evidence.event_type)}</strong>
+                      <span
+                        title={evidence.created_at}
+                        style={{ color: "#64748b", whiteSpace: "nowrap" }}
+                      >
+                        {new Date(evidence.created_at).toLocaleString("pt-PT", {
+                          day: "2-digit",
+                          month: "2-digit",
+                          hour: "2-digit",
+                          minute: "2-digit",
+                        })}
+                      </span>
+                    </div>
+                    {contentLabel ? (
+                      <div
+                        title={contentLabel}
+                        style={{
+                          marginTop: 3,
+                          color: "#475569",
+                          overflowWrap: "anywhere",
+                          wordBreak: "break-word",
+                        }}
+                      >
+                        Conteúdo: {contentLabel}
+                      </div>
+                    ) : null}
+                    <div
+                      style={{
+                        marginTop: 5,
+                        color: "#1e293b",
+                        lineHeight: 1.4,
+                      }}
+                    >
+                      {evidence.event_type === "review"
+                        ? "A abertura deste conteúdo registou uma revisão; por si só, não prova aprendizagem. "
+                        : "Esta atividade forneceu evidência sobre o conhecimento. "}
+                      {evidenceInterpretation(evidence)}
+                    </div>
+                    <div
+                      style={{
+                        display: "flex",
+                        flexWrap: "wrap",
+                        gap: 5,
+                        marginTop: 6,
+                      }}
+                    >
+                      <span
+                        style={{
+                          padding: "2px 5px",
+                          borderRadius: 999,
+                          background:
+                            Number.isFinite(score) && score >= 0.6
+                              ? "#dcfce7"
+                              : Number.isFinite(score) && score <= 0.4
+                                ? "#fee2e2"
+                                : "#fef3c7",
+                        }}
+                      >
+                        Sinal observado {asPercent(score)}
+                      </span>
+                      <span
+                        style={{
+                          padding: "2px 5px",
+                          borderRadius: 999,
+                          background: "#e0f2fe",
+                        }}
+                      >
+                        Peso no modelo {asPercent(evidence.applied_weight, 1)}
+                      </span>
+                      {Number.isFinite(confidenceValue) ? (
+                        <span
+                          style={{
+                            padding: "2px 5px",
+                            borderRadius: 999,
+                            background: "#ede9fe",
+                          }}
+                        >
+                          Confiança declarada {asPercent(confidenceValue)}
+                        </span>
+                      ) : null}
+                    </div>
+                    {Number.isFinite(durationSec) && durationSec > 0 ? (
+                      <div style={{ marginTop: 5, color: "#64748b" }}>
+                        Duração registada: {Math.round(durationSec)} segundos
+                      </div>
+                    ) : null}
+                    <details style={{ marginTop: 5 }}>
+                      <summary
+                        style={{
+                          cursor: "pointer",
+                          color: "#475569",
+                          fontWeight: 600,
+                        }}
+                      >
+                        Ver cálculo técnico
+                      </summary>
+                      <div
+                        style={{
+                          marginTop: 4,
+                          padding: 5,
+                          borderRadius: 6,
+                          background: "#eef2f7",
+                          color: "#475569",
+                          lineHeight: 1.4,
+                        }}
+                      >
+                        Evidência favorável ao domínio (α):{" "}
+                        {Number(evidence.delta_alpha).toFixed(4)}
+                        <br />
+                        Evidência de dificuldade ou erro (β):{" "}
+                        {Number(evidence.delta_beta).toFixed(4)}
+                        <br />
+                        Peso metacognitivo:{" "}
+                        {asPercent(evidence.metacognitive_weight, 1)} · alinhamento{" "}
+                        {asPercent(evidence.metacognitive_alignment, 1)}
+                      </div>
+                    </details>
                   </div>
-                  <div>
-                    +α {evidence.delta_alpha.toFixed(2)} | +β{" "}
-                    {evidence.delta_beta.toFixed(2)}
-                  </div>
-                </div>
-              ))
+                );
+              })
             )}
           </div>
 

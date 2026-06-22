@@ -1,0 +1,103 @@
+<!doctype html>
+<html lang="pt-PT">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Demonstração OLM — Introdução à Programação Python</title>
+  <style>
+    :root { --ink:#132238; --muted:#58708f; --line:#cad7e8; --blue:#1769aa; --blue-soft:#eaf4ff; --amber:#a05a00; --amber-soft:#fff3d6; --green:#1f7045; --green-soft:#e7f7ee; }
+    * { box-sizing:border-box; }
+    body { margin:0; padding:28px; background:#eef3f8; color:var(--ink); font-family:Inter,Segoe UI,Arial,sans-serif; }
+    .figure { width:1160px; margin:0 auto 36px; padding:28px 34px 24px; background:#fff; border:1px solid #d7e1ec; border-radius:14px; box-shadow:0 10px 30px rgba(20,43,70,.08); }
+    .eyebrow { color:var(--blue); font-size:12px; font-weight:800; letter-spacing:.1em; text-transform:uppercase; }
+    h1 { margin:6px 0 5px; font-family:Georgia,serif; font-size:25px; font-weight:600; }
+    .subtitle { color:var(--muted); font-size:14px; margin-bottom:20px; }
+    .caption { margin-top:16px; padding-top:12px; border-top:1px solid var(--line); color:#344b67; font-family:Georgia,serif; font-size:13px; }
+    .legend { display:flex; gap:16px; margin:8px 0 14px; color:var(--muted); font-size:12px; }
+    .dot { display:inline-block; width:9px; height:9px; margin-right:5px; border-radius:50%; }
+    svg text { font-family:Inter,Segoe UI,Arial,sans-serif; }
+    .state-flow { display:grid; grid-template-columns:1fr 1.15fr 1fr; gap:18px; align-items:stretch; }
+    .card { padding:18px; border:1px solid var(--line); border-radius:12px; background:#fbfdff; }
+    .card.event { background:var(--blue-soft); border-color:#91bde2; }
+    .card.after { background:var(--green-soft); border-color:#9fd0b5; }
+    .card h2 { margin:0 0 12px; font-size:16px; }
+    .metric { display:flex; justify-content:space-between; gap:16px; padding:7px 0; border-bottom:1px solid rgba(116,140,167,.22); font-size:13px; }
+    .metric:last-child { border:0; }
+    .metric strong { font-variant-numeric:tabular-nums; }
+    .formula { margin-top:16px; padding:14px 18px; border-left:4px solid var(--blue); background:#f5f9fd; font-family:Cambria,Georgia,serif; font-size:15px; line-height:1.6; }
+    .callout { margin-top:14px; padding:11px 14px; border-radius:9px; background:var(--amber-soft); color:#6d430c; font-size:13px; line-height:1.45; }
+    .ranking { display:grid; gap:10px; }
+    .rank-row { display:grid; grid-template-columns:32px 270px 1fr 310px; gap:12px; align-items:center; font-size:13px; }
+    .rank { width:28px; height:28px; display:grid; place-items:center; border-radius:50%; background:#e7edf5; font-weight:800; }
+    .rank-row.top .rank { color:white; background:var(--blue); }
+    .rank-row.top .name { font-weight:800; color:#0f527f; }
+    .track { height:12px; border-radius:20px; background:#e5edf6; overflow:hidden; }
+    .bar { height:100%; border-radius:20px; background:#7da9cf; }
+    .top .bar { background:var(--blue); }
+    .decomp { color:var(--muted); font-size:11px; font-variant-numeric:tabular-nums; }
+    .decision { margin-top:18px; padding:14px 16px; border-radius:10px; background:var(--green-soft); border:1px solid #a9d8bc; color:#174f33; font-size:13px; line-height:1.45; }
+  </style>
+</head>
+<body>
+  <section class="figure" id="figure-domain">
+    <div class="eyebrow">Domínio de demonstração</div>
+    <h1>Grafo conceptual de Introdução à Programação Python</h1>
+    <div class="subtitle">As setas representam relações pré-requisito → conceito dependente.</div>
+    <div class="legend"><span><i class="dot" style="background:#1769aa"></i>conceito base</span><span><i class="dot" style="background:#1f7045"></i>conceito intermédio</span><span><i class="dot" style="background:#a05a00"></i>conceito aplicado</span></div>
+    <svg width="1090" height="480" viewBox="0 0 1090 480" role="img" aria-label="Grafo de conceitos Python">
+      <defs><marker id="arrow" markerWidth="8" markerHeight="8" refX="7" refY="3" orient="auto"><path d="M0,0 L0,6 L8,3 z" fill="#7890aa"/></marker></defs>
+      <g stroke="#7890aa" stroke-width="2" fill="none" marker-end="url(#arrow)">
+        <path d="M170 218 L220 218"/><path d="M370 218 L420 120"/><path d="M370 218 L420 310"/>
+        <path d="M570 120 L620 120"/><path d="M570 310 L620 225"/><path d="M770 120 L770 188"/>
+        <path d="M770 262 L820 98"/><path d="M770 262 L820 218"/><path d="M770 262 L820 350"/>
+        <path d="M770 120 L820 218"/><path d="M970 218 L1010 218"/><path d="M770 262 L1010 218"/>
+      </g>
+      <g>
+        <rect x="20" y="180" width="150" height="76" rx="10" fill="#eaf4ff" stroke="#1769aa"/><text x="95" y="208" text-anchor="middle" font-size="13" font-weight="700">Execução e sintaxe</text><text x="95" y="231" text-anchor="middle" font-size="10" fill="#58708f">01-primeiros-passos.md</text>
+        <rect x="220" y="180" width="150" height="76" rx="10" fill="#eaf4ff" stroke="#1769aa"/><text x="295" y="208" text-anchor="middle" font-size="13" font-weight="700">Variáveis e tipos</text><text x="295" y="231" text-anchor="middle" font-size="10" fill="#58708f">02-variaveis-e-tipos.md</text>
+        <rect x="420" y="82" width="150" height="76" rx="10" fill="#e7f7ee" stroke="#1f7045"/><text x="495" y="110" text-anchor="middle" font-size="13" font-weight="700">Operadores</text><text x="495" y="133" text-anchor="middle" font-size="10" fill="#58708f">03-operadores-…md</text>
+        <rect x="420" y="272" width="150" height="76" rx="10" fill="#e7f7ee" stroke="#1f7045"/><text x="495" y="300" text-anchor="middle" font-size="13" font-weight="700">Coleções</text><text x="495" y="323" text-anchor="middle" font-size="10" fill="#58708f">05-colecoes.md</text>
+        <rect x="620" y="82" width="150" height="76" rx="10" fill="#e7f7ee" stroke="#1f7045"/><text x="695" y="110" text-anchor="middle" font-size="13" font-weight="700">Condicionais</text><text x="695" y="133" text-anchor="middle" font-size="10" fill="#58708f">04-condicionais.md</text>
+        <rect x="620" y="188" width="150" height="76" rx="10" fill="#e7f7ee" stroke="#1f7045"/><text x="695" y="216" text-anchor="middle" font-size="13" font-weight="700">Ciclos</text><text x="695" y="239" text-anchor="middle" font-size="10" fill="#58708f">06-ciclos.md</text>
+        <rect x="620" y="352" width="150" height="76" rx="10" fill="#fff3d6" stroke="#a05a00"/><text x="695" y="380" text-anchor="middle" font-size="13" font-weight="700">Funções</text><text x="695" y="403" text-anchor="middle" font-size="10" fill="#58708f">07-funcoes.md</text>
+        <rect x="820" y="60" width="150" height="76" rx="10" fill="#fff3d6" stroke="#a05a00"/><text x="895" y="88" text-anchor="middle" font-size="13" font-weight="700">Módulos</text><text x="895" y="111" text-anchor="middle" font-size="10" fill="#58708f">08-modulos.md</text>
+        <rect x="820" y="180" width="150" height="76" rx="10" fill="#fff3d6" stroke="#a05a00"/><text x="895" y="208" text-anchor="middle" font-size="13" font-weight="700">Exceções</text><text x="895" y="231" text-anchor="middle" font-size="10" fill="#58708f">09-erros-e-excecoes.md</text>
+        <rect x="820" y="312" width="150" height="76" rx="10" fill="#fff3d6" stroke="#a05a00"/><text x="895" y="340" text-anchor="middle" font-size="13" font-weight="700">Classes e objetos</text><text x="895" y="363" text-anchor="middle" font-size="10" fill="#58708f">11-classes-e-objetos.md</text>
+        <rect x="1010" y="180" width="76" height="76" rx="10" fill="#fff3d6" stroke="#a05a00"/><text x="1048" y="211" text-anchor="middle" font-size="12" font-weight="700">Ficheiros</text><text x="1048" y="233" text-anchor="middle" font-size="9" fill="#58708f">10-…md</text>
+        <rect x="20" y="28" width="215" height="60" rx="10" fill="#f4f6f9" stroke="#94a3b8" stroke-dasharray="5 4"/><text x="127" y="54" text-anchor="middle" font-size="12" font-weight="700">Percurso de fundamentos</text><text x="127" y="73" text-anchor="middle" font-size="10" fill="#58708f">índice e orientação</text>
+      </g>
+    </svg>
+    <div class="caption"><strong>Figura 5.1 —</strong> Grafo de pré-requisitos do domínio Introdução à Programação Python.</div>
+  </section>
+
+  <section class="figure" id="figure-update">
+    <div class="eyebrow">Modelo de evidência</div>
+    <h1>De um evento observável à atualização do conceito</h1>
+    <div class="subtitle">Caso determinístico: tentativa prática sobre Condicionais em Python, 4/5 respostas corretas.</div>
+    <div class="state-flow">
+      <div class="card"><h2>Estado anterior</h2><div class="metric"><span>Evidência favorável (α)</span><strong>2,5000</strong></div><div class="metric"><span>Evidência de dificuldade (β)</span><strong>3,5000</strong></div><div class="metric"><span>Domínio estimado</span><strong>41,67%</strong></div><div class="metric"><span>Incerteza</span><strong>41,67%</strong></div></div>
+      <div class="card event"><h2>Evento de aprendizagem</h2><div class="metric"><span>Tipo</span><strong>Tentativa prática</strong></div><div class="metric"><span>Resultado objetivo</span><strong>4 / 5</strong></div><div class="metric"><span>Confiança declarada</span><strong>75%</strong></div><div class="metric"><span>Score efetivo</span><strong>67,04%</strong></div><div class="metric"><span>Peso aplicado</span><strong>9,47%</strong></div></div>
+      <div class="card after"><h2>Estado atualizado</h2><div class="metric"><span>Evidência favorável (α)</span><strong>2,5635</strong></div><div class="metric"><span>Evidência de dificuldade (β)</span><strong>3,5312</strong></div><div class="metric"><span>Domínio estimado</span><strong>42,06%</strong></div><div class="metric"><span>Incerteza</span><strong>41,22%</strong></div></div>
+    </div>
+    <div class="formula">α′ = 2,5000 + (0,0947 × 0,6704) = 2,5635<br/>β′ = 3,5000 + (0,0947 × (1 − 0,6704)) = 3,5312</div>
+    <div class="callout"><strong>Interpretação:</strong> a tentativa favorece o domínio, mas a atualização permanece conservadora. O ganho de domínio é de 0,39 pontos percentuais e a incerteza diminui 0,45 pontos; um único evento não consolida o conceito.</div>
+    <div class="caption"><strong>Figura 6.1 —</strong> Transformação de um evento de aprendizagem em evidência conceptual e novo estado.</div>
+  </section>
+
+  <section class="figure" id="figure-ranking">
+    <div class="eyebrow">Mecanismo de decisão</div>
+    <h1>Decomposição do ranking após a atualização</h1>
+    <div class="subtitle">O score final combina necessidade de aprendizagem, prontidão estrutural e penalizações.</div>
+    <div class="ranking">
+      <div class="rank-row top"><span class="rank">1</span><span class="name">Condicionais em Python</span><div class="track"><div class="bar" style="width:100%"></div></div><span class="decomp">prontidão 48,25% · domínio 42,06% · penalização 68,84% · score 18,05%</span></div>
+      <div class="rank-row"><span class="rank">2</span><span class="name">Coleções em Python</span><div class="track"><div class="bar" style="width:95.1%"></div></div><span class="decomp">prontidão 56,47% · domínio 57,14% · penalização 59,92% · score 17,18%</span></div>
+      <div class="rank-row"><span class="rank">3</span><span class="name">Execução e sintaxe</span><div class="track"><div class="bar" style="width:88.6%"></div></div><span class="decomp">prontidão 100,00% · domínio 81,82% · penalização 12,00% · score 16,00%</span></div>
+      <div class="rank-row"><span class="rank">4</span><span class="name">Operadores e interação</span><div class="track"><div class="bar" style="width:66.6%"></div></div><span class="decomp">prontidão 56,47% · domínio 70,00% · penalização 59,92% · score 12,02%</span></div>
+      <div class="rank-row"><span class="rank">5</span><span class="name">Variáveis e tipos</span><div class="track"><div class="bar" style="width:55.8%"></div></div><span class="decomp">prontidão 65,12% · domínio 80,00% · penalização 49,66% · score 10,07%</span></div>
+      <div class="rank-row"><span class="rank">6</span><span class="name">Ciclos em Python</span><div class="track"><div class="bar" style="width:45.4%"></div></div><span class="decomp">prontidão 28,82% · domínio 40,00% · penalização 86,34% · score 8,20%</span></div>
+    </div>
+    <div class="decision"><strong>Decisão:</strong> Condicionais permanece a melhor próxima opção. Apesar do resultado positivo, o domínio estimado continua baixo e a evidência ainda é limitada; Ciclos, embora também frágil, recebe uma penalização maior porque depende simultaneamente de Condicionais e Coleções.</div>
+    <div class="caption"><strong>Figura 6.2 —</strong> Ranking e decomposição dos candidatos após o evento simulado.</div>
+  </section>
+</body>
+</html>

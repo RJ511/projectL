@@ -447,7 +447,7 @@ export function useFileSystem(rootPath) {
   }
 
   function buildMetaPromptLabel(trigger) {
-    if (trigger === "domain_switch") return "Mudanca de dominio";
+    if (trigger === "domain_switch") return "Mudanca de domínio";
     if (trigger === "test_end") return "Fim de teste/quiz";
     return "Check-in periodico";
   }
@@ -494,7 +494,7 @@ export function useFileSystem(rootPath) {
     const question =
       META_QUESTIONS[questionCursorRef.current % META_QUESTIONS.length];
 
-    const scope = domain ? `Dominio: ${domain}` : "Dominio: geral";
+    const scope = domain ? `Domínio: ${domain}` : "Domínio: geral";
     const triggerLabel = buildMetaPromptLabel(safeTrigger);
 
     metaPromptInFlightRef.current = true;

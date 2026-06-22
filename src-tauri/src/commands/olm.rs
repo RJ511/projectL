@@ -1668,12 +1668,12 @@ let review_score = gate_factor * review_signal * root_multiplier;
                     format!("; outros: {}", others.join(", "))
                 };
                 why.push(format!(
-                    "Pronto: pré-req '{}' (r={:.2}){} — readiness={:.2} ≥ limiar",
+                    "Pré-requisitos suficientemente consolidados: '{}' ({:.2}){} — prontidão estrutural {:.2} ≥ limiar",
                     weakest.0, weakest.1, others_str, readiness
                 ));
             } else {
                 why.push(format!(
-                    "Bloqueado: pré-req '{}' com readiness insuficiente (r={:.2})",
+                    "Ainda condicionado pelo pré-requisito '{}' — prontidão insuficiente ({:.2})",
                     weakest.0, weakest.1
                 ));
             }
@@ -1681,26 +1681,26 @@ let review_score = gate_factor * review_signal * root_multiplier;
 
         // 2. Conceptual gap
         why.push(format!(
-            "Recomendado: lacuna conceptual alta (mastery={:.2}, gap={:.2})",
+            "Necessidade de aprendizagem: domínio estimado {:.2}; lacuna por consolidar {:.2}",
             concept_mastery,
             1.0 - concept_mastery
         ));
 
         // 3. Active policy + scores
         why.push(format!(
-            "Política '{}': learn={:.3}, review={:.3}",
+            "Política de decisão '{}': prioridade para aprender {:.3}; prioridade para rever {:.3}",
             policy, learn_score, review_score
         ));
 
         // 4. Uncertainty
         if concept_uncertainty >= 0.3 {
             why.push(format!(
-                "Prioridade aumentada por incerteza residual (u={:.3})",
+                "Prioridade aumentada porque a estimativa ainda é incerta ({:.3})",
                 concept_uncertainty
             ));
         } else if concept_uncertainty < 0.05 {
             why.push(format!(
-                "Incerteza muito baixa (u={:.3}): mastery bem calibrada",
+                "Estimativa estável: incerteza muito baixa ({:.3})",
                 concept_uncertainty
             ));
         }
@@ -1708,7 +1708,7 @@ let review_score = gate_factor * review_signal * root_multiplier;
         // 5. Decay penalization
         if decay_signal > 0.02 {
             why.push(format!(
-                "Penalização por decay: mastery efetiva reduzida em {:.3} (evidência antiga)",
+                "Penalização por esquecimento temporal: domínio efetivo reduzido em {:.3} devido à antiguidade da evidência",
                 decay_signal
             ));
         }
@@ -1716,7 +1716,7 @@ let review_score = gate_factor * review_signal * root_multiplier;
         // 6. Inconsistency
         if inconsistency_signal > 0.15 {
             why.push(format!(
-                "Variabilidade de scores recentes: {:.2} — inconsistência detetada",
+                "Resultados recentes pouco consistentes ({:.2}); recomenda-se recolher nova evidência",
                 inconsistency_signal
             ));
         }
@@ -3915,11 +3915,241 @@ pub fn olm_get_debug_ranking(
     })
 }
 
+/// Caso determinístico usado na documentação académica do domínio Python.
+/// Executa o mesmo pipeline de ingestão e ranking usado pela aplicação.
+pub fn run_python_domain_demonstration() -> Result<Value, String> {
+    let domain = "introducao-a-programacao-python";
+    let concept_specs = vec![
+        ("percurso-de-fundamentos-de-python", "Percurso de fundamentos de Python", "Visão geral e sequência recomendada da coletânea."),
+        ("execucao-e-sintaxe-de-python", "Execução e sintaxe de Python", "Execução de programas, comentários, blocos e indentação."),
+        ("variaveis-e-tipos-basicos-em-python", "Variáveis e tipos básicos em Python", "Representação, atribuição e conversão de valores básicos."),
+        ("operadores-e-interacao-em-python", "Operadores e interação em Python", "Expressões aritméticas, comparações, lógica, entrada e saída."),
+        ("condicionais-em-python", "Condicionais em Python", "Seleção de comportamento com if, elif e else."),
+        ("colecoes-em-python", "Coleções em Python", "Organização de dados em listas, tuplos, dicionários e conjuntos."),
+        ("ciclos-em-python", "Ciclos em Python", "Repetição controlada com for e while."),
+        ("funcoes-em-python", "Funções em Python", "Encapsulamento e reutilização de comportamento."),
+        ("modulos-em-python", "Módulos em Python", "Organização e reutilização de código entre ficheiros."),
+        ("excecoes-em-python", "Exceções em Python", "Tratamento explícito de situações de erro."),
+        ("ficheiros-em-python", "Ficheiros em Python", "Leitura e escrita persistente de dados."),
+        ("classes-e-objetos-em-python", "Classes e objetos em Python", "Modelação simples de entidades, estado e comportamento."),
+    ];
+    let edge_specs = vec![
+        ("execucao-e-sintaxe-de-python", "variaveis-e-tipos-basicos-em-python"),
+        ("variaveis-e-tipos-basicos-em-python", "operadores-e-interacao-em-python"),
+        ("operadores-e-interacao-em-python", "condicionais-em-python"),
+        ("variaveis-e-tipos-basicos-em-python", "colecoes-em-python"),
+        ("condicionais-em-python", "ciclos-em-python"),
+        ("colecoes-em-python", "ciclos-em-python"),
+        ("ciclos-em-python", "funcoes-em-python"),
+        ("funcoes-em-python", "modulos-em-python"),
+        ("funcoes-em-python", "excecoes-em-python"),
+        ("condicionais-em-python", "excecoes-em-python"),
+        ("excecoes-em-python", "ficheiros-em-python"),
+        ("ciclos-em-python", "ficheiros-em-python"),
+        ("funcoes-em-python", "classes-e-objetos-em-python"),
+        ("colecoes-em-python", "classes-e-objetos-em-python"),
+    ];
+    let content_specs = vec![
+        ("00-indice.md", "Python — fundamentos", "percurso-de-fundamentos-de-python", "leitura"),
+        ("01-primeiros-passos.md", "Primeiros passos", "execucao-e-sintaxe-de-python", "leitura, exercício"),
+        ("02-variaveis-e-tipos.md", "Variáveis e tipos básicos", "variaveis-e-tipos-basicos-em-python", "leitura, quiz, exercício"),
+        ("03-operadores-entrada-saida.md", "Operadores, entrada e saída", "operadores-e-interacao-em-python", "leitura, quiz, exercício"),
+        ("04-condicionais.md", "Decisões com condicionais", "condicionais-em-python", "leitura, quiz, exercício"),
+        ("05-colecoes.md", "Coleções", "colecoes-em-python", "leitura, quiz, exercício"),
+        ("06-ciclos.md", "Ciclos", "ciclos-em-python", "leitura, exercício"),
+        ("07-funcoes.md", "Funções", "funcoes-em-python", "leitura, exercício"),
+        ("08-modulos.md", "Módulos e importações", "modulos-em-python", "leitura, exercício"),
+        ("09-erros-e-excecoes.md", "Erros e exceções", "excecoes-em-python", "leitura, quiz, exercício"),
+        ("10-ficheiros.md", "Leitura e escrita de ficheiros", "ficheiros-em-python", "leitura, exercício"),
+        ("11-classes-e-objetos.md", "Classes e objetos", "classes-e-objetos-em-python", "leitura, exercício"),
+    ];
+
+    let full_id = |slug: &str| format!("{}.inline.{}", domain, slug);
+    let mut store = OlmStore::default();
+    store.config.ranking_policy = "adaptive".to_string();
+    store.config.decay_enabled = false;
+
+    for (slug, name, description) in &concept_specs {
+        let id = full_id(slug);
+        store.concepts.insert(id.clone(), Concept {
+            id,
+            name: (*name).to_string(),
+            description: Some((*description).to_string()),
+        });
+    }
+    for (prereq, target) in &edge_specs {
+        store.edges.push(ConceptEdge {
+            prereq_id: full_id(prereq),
+            target_id: full_id(target),
+        });
+    }
+    for (file, title, concept_slug, _) in &content_specs {
+        let content_id = format!("Introdução à Programação Python/{}", file);
+        store.content_items.insert(content_id.clone(), ContentItem {
+            id: content_id.clone(),
+            item_type: "note".to_string(),
+            title: (*title).to_string(),
+            domain_id: Some(domain.to_string()),
+        });
+        store.content_concepts.push(ContentConceptMap {
+            content_id,
+            concept_id: full_id(concept_slug),
+            coverage_weight: 1.0,
+        });
+    }
+
+    let initial_states = vec![
+        ("percurso-de-fundamentos-de-python", 9.0, 1.0),
+        ("execucao-e-sintaxe-de-python", 9.0, 2.0),
+        ("variaveis-e-tipos-basicos-em-python", 8.0, 2.0),
+        ("operadores-e-interacao-em-python", 7.0, 3.0),
+        ("condicionais-em-python", 2.5, 3.5),
+        ("colecoes-em-python", 4.0, 3.0),
+        ("ciclos-em-python", 2.0, 3.0),
+        ("funcoes-em-python", 1.5, 3.5),
+        ("modulos-em-python", 1.0, 2.0),
+        ("excecoes-em-python", 1.2, 2.8),
+        ("ficheiros-em-python", 1.0, 2.0),
+        ("classes-e-objetos-em-python", 1.0, 2.5),
+    ];
+    for (slug, positive_evidence, difficulty_evidence) in initial_states {
+        store.concept_state.insert(full_id(slug), ConceptState {
+            alpha: positive_evidence,
+            beta: difficulty_evidence,
+            last_update: Some("2026-06-22T09:00:00Z".to_string()),
+        });
+    }
+
+    let target_id = full_id("condicionais-em-python");
+    let before = store.concept_state.get(&target_id).cloned()
+        .ok_or_else(|| "Estado inicial do conceito não encontrado".to_string())?;
+    let event = StudyEvent {
+        event_id: "demo-practice-conditionals-001".to_string(),
+        timestamp: "2026-06-22T10:00:00Z".to_string(),
+        source: "demo_academica".to_string(),
+        event_type: "practice_attempt".to_string(),
+        content_id: Some("Introdução à Programação Python/04-condicionais.md".to_string()),
+        concept_ids: vec![target_id.clone()],
+        payload: json!({ "correct": 4.0, "total": 5.0, "confidence": 0.75, "duration_sec": 420.0 }),
+    };
+    let raw_event_score = event_score(&event);
+    let meta_strength = store.config.meta_strength;
+    ingest_into_store(&mut store, &event, meta_strength)?;
+    let after = store.concept_state.get(&target_id).cloned()
+        .ok_or_else(|| "Estado atualizado do conceito não encontrado".to_string())?;
+    let evidence = store.evidence.get(&target_id).and_then(|rows| rows.last()).cloned()
+        .ok_or_else(|| "Evidência da simulação não encontrada".to_string())?;
+
+    let exclude = HashSet::new();
+    let (ranking, _) = rank_next_to_study(
+        &store,
+        Some(6),
+        store.config.ranking_lambda_resolved(),
+        store.config.theta,
+        store.config.min_readiness,
+        store.config.gamma,
+        store.config.readiness_distance_delta,
+        &store.config.ranking_policy,
+        Some(store.config.soft_gate_k),
+        store.config.root_penalty,
+        store.config.stop_mastery,
+        &exclude,
+        Some("introducao-a-programacao-python."),
+    );
+
+    let concept_rows: Vec<Value> = concept_specs.iter().map(|(slug, name, description)| {
+        let prerequisites: Vec<String> = edge_specs.iter()
+            .filter(|(_, target)| target == slug)
+            .filter_map(|(prereq, _)| concept_specs.iter()
+                .find(|(candidate, _, _)| candidate == prereq)
+                .map(|(_, prereq_name, _)| (*prereq_name).to_string()))
+            .collect();
+        let contents: Vec<String> = content_specs.iter()
+            .filter(|(_, _, concept, _)| concept == slug)
+            .map(|(file, _, _, _)| (*file).to_string())
+            .collect();
+        json!({
+            "id": full_id(slug), "name": name, "description": description,
+            "prerequisites": prerequisites, "contents": contents,
+        })
+    }).collect();
+
+    let content_rows: Vec<Value> = content_specs.iter().map(|(file, title, concept_slug, evidence_types)| {
+        let concept_name = concept_specs.iter()
+            .find(|(slug, _, _)| slug == concept_slug)
+            .map(|(_, name, _)| *name)
+            .unwrap_or(*concept_slug);
+        json!({
+            "file": file, "title": title, "concepts": [concept_name],
+            "content_type": "Nota Markdown interativa", "possible_evidence": evidence_types,
+        })
+    }).collect();
+
+    let ranking_rows: Vec<Value> = ranking.iter().enumerate().map(|(index, candidate)| {
+        let penalty = 1.0 - clamp_01(candidate.gate_factor * candidate.score_decomposition.root_multiplier);
+        json!({
+            "rank": index + 1, "concept_id": candidate.concept_id, "name": candidate.name,
+            "structural_readiness": candidate.readiness, "current_mastery": candidate.mastery,
+            "uncertainty": candidate.uncertainty, "penalty": penalty,
+            "final_score": candidate.score,
+            "decision": if index == 0 { "Recomendar como próxima opção" } else { "Alternativa" },
+            "why": candidate.why,
+        })
+    }).collect();
+
+    Ok(json!({
+        "simulation": {
+            "title": "Atualização de Condicionais em Python após tentativa prática",
+            "deterministic": true, "timestamp": event.timestamp, "event": event,
+            "raw_event_score": raw_event_score,
+            "event_type_base_weight": event_type_weight("practice_attempt"),
+        },
+        "concepts": concept_rows,
+        "contents": content_rows,
+        "update": {
+            "concept_id": target_id, "concept_name": "Condicionais em Python",
+            "positive_evidence_before": before.alpha, "difficulty_evidence_before": before.beta,
+            "mastery_before": mastery(&before), "uncertainty_before": uncertainty(&before),
+            "score": evidence.score, "applied_weight": evidence.applied_weight,
+            "positive_evidence_delta": evidence.delta_alpha,
+            "difficulty_evidence_delta": evidence.delta_beta,
+            "positive_evidence_after": after.alpha, "difficulty_evidence_after": after.beta,
+            "mastery_after": mastery(&after), "uncertainty_after": uncertainty(&after),
+            "metacognitive_weight": evidence.metacognitive_weight,
+            "metacognitive_alignment": evidence.metacognitive_alignment,
+            "effect": "O desempenho de 4/5 produz evidência favorável ao domínio, mas o limitador inicial mantém a atualização conservadora; uma única tentativa não consolida o conceito.",
+        },
+        "recommendation_ranking": ranking_rows,
+        "formulas": {
+            "mastery": "evidência favorável / (evidência favorável + evidência de dificuldade)",
+            "uncertainty": "αβ / ((α+β)^2(α+β+1))",
+            "event_score": "respostas corretas / total de respostas",
+            "state_update": "α' = α + peso×score; β' = β + peso×(1-score)",
+        }
+    }))
+}
+
 // ── Unit tests ────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn python_domain_demonstration_updates_state_and_ranks_conditionals_first() {
+        let report = run_python_domain_demonstration().expect("demo should run");
+        let update = &report["update"];
+        assert!(update["positive_evidence_after"].as_f64().unwrap()
+            > update["positive_evidence_before"].as_f64().unwrap());
+        assert!(update["mastery_after"].as_f64().unwrap()
+            > update["mastery_before"].as_f64().unwrap());
+        assert!(update["uncertainty_after"].as_f64().unwrap()
+            < update["uncertainty_before"].as_f64().unwrap());
+        assert_eq!(
+            report["recommendation_ranking"][0]["name"].as_str(),
+            Some("Condicionais em Python")
+        );
+    }
 
     fn make_state_cs(alpha: f64, beta: f64) -> ConceptState {
         ConceptState {

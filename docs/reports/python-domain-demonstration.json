@@ -1,0 +1,398 @@
+{
+  "concepts": [
+    {
+      "contents": [
+        "00-indice.md"
+      ],
+      "description": "Visão geral e sequência recomendada da coletânea.",
+      "id": "introducao-a-programacao-python.inline.percurso-de-fundamentos-de-python",
+      "name": "Percurso de fundamentos de Python",
+      "prerequisites": []
+    },
+    {
+      "contents": [
+        "01-primeiros-passos.md"
+      ],
+      "description": "Execução de programas, comentários, blocos e indentação.",
+      "id": "introducao-a-programacao-python.inline.execucao-e-sintaxe-de-python",
+      "name": "Execução e sintaxe de Python",
+      "prerequisites": []
+    },
+    {
+      "contents": [
+        "02-variaveis-e-tipos.md"
+      ],
+      "description": "Representação, atribuição e conversão de valores básicos.",
+      "id": "introducao-a-programacao-python.inline.variaveis-e-tipos-basicos-em-python",
+      "name": "Variáveis e tipos básicos em Python",
+      "prerequisites": [
+        "Execução e sintaxe de Python"
+      ]
+    },
+    {
+      "contents": [
+        "03-operadores-entrada-saida.md"
+      ],
+      "description": "Expressões aritméticas, comparações, lógica, entrada e saída.",
+      "id": "introducao-a-programacao-python.inline.operadores-e-interacao-em-python",
+      "name": "Operadores e interação em Python",
+      "prerequisites": [
+        "Variáveis e tipos básicos em Python"
+      ]
+    },
+    {
+      "contents": [
+        "04-condicionais.md"
+      ],
+      "description": "Seleção de comportamento com if, elif e else.",
+      "id": "introducao-a-programacao-python.inline.condicionais-em-python",
+      "name": "Condicionais em Python",
+      "prerequisites": [
+        "Operadores e interação em Python"
+      ]
+    },
+    {
+      "contents": [
+        "05-colecoes.md"
+      ],
+      "description": "Organização de dados em listas, tuplos, dicionários e conjuntos.",
+      "id": "introducao-a-programacao-python.inline.colecoes-em-python",
+      "name": "Coleções em Python",
+      "prerequisites": [
+        "Variáveis e tipos básicos em Python"
+      ]
+    },
+    {
+      "contents": [
+        "06-ciclos.md"
+      ],
+      "description": "Repetição controlada com for e while.",
+      "id": "introducao-a-programacao-python.inline.ciclos-em-python",
+      "name": "Ciclos em Python",
+      "prerequisites": [
+        "Condicionais em Python",
+        "Coleções em Python"
+      ]
+    },
+    {
+      "contents": [
+        "07-funcoes.md"
+      ],
+      "description": "Encapsulamento e reutilização de comportamento.",
+      "id": "introducao-a-programacao-python.inline.funcoes-em-python",
+      "name": "Funções em Python",
+      "prerequisites": [
+        "Ciclos em Python"
+      ]
+    },
+    {
+      "contents": [
+        "08-modulos.md"
+      ],
+      "description": "Organização e reutilização de código entre ficheiros.",
+      "id": "introducao-a-programacao-python.inline.modulos-em-python",
+      "name": "Módulos em Python",
+      "prerequisites": [
+        "Funções em Python"
+      ]
+    },
+    {
+      "contents": [
+        "09-erros-e-excecoes.md"
+      ],
+      "description": "Tratamento explícito de situações de erro.",
+      "id": "introducao-a-programacao-python.inline.excecoes-em-python",
+      "name": "Exceções em Python",
+      "prerequisites": [
+        "Funções em Python",
+        "Condicionais em Python"
+      ]
+    },
+    {
+      "contents": [
+        "10-ficheiros.md"
+      ],
+      "description": "Leitura e escrita persistente de dados.",
+      "id": "introducao-a-programacao-python.inline.ficheiros-em-python",
+      "name": "Ficheiros em Python",
+      "prerequisites": [
+        "Exceções em Python",
+        "Ciclos em Python"
+      ]
+    },
+    {
+      "contents": [
+        "11-classes-e-objetos.md"
+      ],
+      "description": "Modelação simples de entidades, estado e comportamento.",
+      "id": "introducao-a-programacao-python.inline.classes-e-objetos-em-python",
+      "name": "Classes e objetos em Python",
+      "prerequisites": [
+        "Funções em Python",
+        "Coleções em Python"
+      ]
+    }
+  ],
+  "contents": [
+    {
+      "concepts": [
+        "Percurso de fundamentos de Python"
+      ],
+      "content_type": "Nota Markdown interativa",
+      "file": "00-indice.md",
+      "possible_evidence": "leitura",
+      "title": "Python — fundamentos"
+    },
+    {
+      "concepts": [
+        "Execução e sintaxe de Python"
+      ],
+      "content_type": "Nota Markdown interativa",
+      "file": "01-primeiros-passos.md",
+      "possible_evidence": "leitura, exercício",
+      "title": "Primeiros passos"
+    },
+    {
+      "concepts": [
+        "Variáveis e tipos básicos em Python"
+      ],
+      "content_type": "Nota Markdown interativa",
+      "file": "02-variaveis-e-tipos.md",
+      "possible_evidence": "leitura, quiz, exercício",
+      "title": "Variáveis e tipos básicos"
+    },
+    {
+      "concepts": [
+        "Operadores e interação em Python"
+      ],
+      "content_type": "Nota Markdown interativa",
+      "file": "03-operadores-entrada-saida.md",
+      "possible_evidence": "leitura, quiz, exercício",
+      "title": "Operadores, entrada e saída"
+    },
+    {
+      "concepts": [
+        "Condicionais em Python"
+      ],
+      "content_type": "Nota Markdown interativa",
+      "file": "04-condicionais.md",
+      "possible_evidence": "leitura, quiz, exercício",
+      "title": "Decisões com condicionais"
+    },
+    {
+      "concepts": [
+        "Coleções em Python"
+      ],
+      "content_type": "Nota Markdown interativa",
+      "file": "05-colecoes.md",
+      "possible_evidence": "leitura, quiz, exercício",
+      "title": "Coleções"
+    },
+    {
+      "concepts": [
+        "Ciclos em Python"
+      ],
+      "content_type": "Nota Markdown interativa",
+      "file": "06-ciclos.md",
+      "possible_evidence": "leitura, exercício",
+      "title": "Ciclos"
+    },
+    {
+      "concepts": [
+        "Funções em Python"
+      ],
+      "content_type": "Nota Markdown interativa",
+      "file": "07-funcoes.md",
+      "possible_evidence": "leitura, exercício",
+      "title": "Funções"
+    },
+    {
+      "concepts": [
+        "Módulos em Python"
+      ],
+      "content_type": "Nota Markdown interativa",
+      "file": "08-modulos.md",
+      "possible_evidence": "leitura, exercício",
+      "title": "Módulos e importações"
+    },
+    {
+      "concepts": [
+        "Exceções em Python"
+      ],
+      "content_type": "Nota Markdown interativa",
+      "file": "09-erros-e-excecoes.md",
+      "possible_evidence": "leitura, quiz, exercício",
+      "title": "Erros e exceções"
+    },
+    {
+      "concepts": [
+        "Ficheiros em Python"
+      ],
+      "content_type": "Nota Markdown interativa",
+      "file": "10-ficheiros.md",
+      "possible_evidence": "leitura, exercício",
+      "title": "Leitura e escrita de ficheiros"
+    },
+    {
+      "concepts": [
+        "Classes e objetos em Python"
+      ],
+      "content_type": "Nota Markdown interativa",
+      "file": "11-classes-e-objetos.md",
+      "possible_evidence": "leitura, exercício",
+      "title": "Classes e objetos"
+    }
+  ],
+  "formulas": {
+    "event_score": "respostas corretas / total de respostas",
+    "mastery": "evidência favorável / (evidência favorável + evidência de dificuldade)",
+    "state_update": "α' = α + peso×score; β' = β + peso×(1-score)",
+    "uncertainty": "αβ / ((α+β)^2(α+β+1))"
+  },
+  "recommendation_ranking": [
+    {
+      "concept_id": "introducao-a-programacao-python.inline.condicionais-em-python",
+      "current_mastery": 0.4206082730606655,
+      "decision": "Recomendar como próxima opção",
+      "final_score": 0.1805158106877708,
+      "name": "Condicionais em Python",
+      "penalty": 0.6884390951846093,
+      "rank": 1,
+      "structural_readiness": 0.4824633719008264,
+      "uncertainty": 0.41219175279262565,
+      "why": [
+        "Ainda condicionado pelo pré-requisito 'Execução e sintaxe de Python' — prontidão insuficiente (0.47)",
+        "Necessidade de aprendizagem: domínio estimado 0.42; lacuna por consolidar 0.58",
+        "Política de decisão 'adaptive': prioridade para aprender 0.181; prioridade para rever 0.077",
+        "Prioridade aumentada porque a estimativa ainda é incerta (0.412)",
+        "Abaixo do limiar (0.50): mantido por soft-gating (k=1.60)"
+      ]
+    },
+    {
+      "concept_id": "introducao-a-programacao-python.inline.colecoes-em-python",
+      "current_mastery": 0.5714285714285714,
+      "decision": "Alternativa",
+      "final_score": 0.17176464860950497,
+      "name": "Coleções em Python",
+      "penalty": 0.599215819911155,
+      "rank": 2,
+      "structural_readiness": 0.564701714876033,
+      "uncertainty": 0.3673469387755102,
+      "why": [
+        "Pré-requisitos suficientemente consolidados: 'Execução e sintaxe de Python' (0.55); outros: Variáveis e tipos básicos em Python (r=0.63) — prontidão estrutural 0.56 ≥ limiar",
+        "Necessidade de aprendizagem: domínio estimado 0.57; lacuna por consolidar 0.43",
+        "Política de decisão 'adaptive': prioridade para aprender 0.172; prioridade para rever 0.088",
+        "Prioridade aumentada porque a estimativa ainda é incerta (0.367)"
+      ]
+    },
+    {
+      "concept_id": "introducao-a-programacao-python.inline.execucao-e-sintaxe-de-python",
+      "current_mastery": 0.8181818181818182,
+      "decision": "Alternativa",
+      "final_score": 0.15999999999999995,
+      "name": "Execução e sintaxe de Python",
+      "penalty": 0.12,
+      "rank": 3,
+      "structural_readiness": 1.0,
+      "uncertainty": 0.1487603305785124,
+      "why": [
+        "Sem pré-requisitos: acesso direto ao conceito",
+        "Necessidade de aprendizagem: domínio estimado 0.82; lacuna por consolidar 0.18",
+        "Política de decisão 'adaptive': prioridade para aprender 0.160; prioridade para rever 0.079",
+        "Penalização de raiz aplicada: conceito sem pré-requisitos (×0.88)"
+      ]
+    },
+    {
+      "concept_id": "introducao-a-programacao-python.inline.operadores-e-interacao-em-python",
+      "current_mastery": 0.7,
+      "decision": "Alternativa",
+      "final_score": 0.1202352540266535,
+      "name": "Operadores e interação em Python",
+      "penalty": 0.599215819911155,
+      "rank": 4,
+      "structural_readiness": 0.564701714876033,
+      "uncertainty": 0.22909090909090912,
+      "why": [
+        "Pré-requisitos suficientemente consolidados: 'Execução e sintaxe de Python' (0.55); outros: Variáveis e tipos básicos em Python (r=0.63) — prontidão estrutural 0.56 ≥ limiar",
+        "Necessidade de aprendizagem: domínio estimado 0.70; lacuna por consolidar 0.30",
+        "Política de decisão 'adaptive': prioridade para aprender 0.120; prioridade para rever 0.055"
+      ]
+    },
+    {
+      "concept_id": "introducao-a-programacao-python.inline.variaveis-e-tipos-basicos-em-python",
+      "current_mastery": 0.8,
+      "decision": "Alternativa",
+      "final_score": 0.10068650335721638,
+      "name": "Variáveis e tipos básicos em Python",
+      "penalty": 0.49656748321391797,
+      "rank": 5,
+      "structural_readiness": 0.6511983471074381,
+      "uncertainty": 0.17454545454545456,
+      "why": [
+        "Pré-requisitos suficientemente consolidados: 'Execução e sintaxe de Python' (0.65) — prontidão estrutural 0.65 ≥ limiar",
+        "Necessidade de aprendizagem: domínio estimado 0.80; lacuna por consolidar 0.20",
+        "Política de decisão 'adaptive': prioridade para aprender 0.101; prioridade para rever 0.053"
+      ]
+    },
+    {
+      "concept_id": "introducao-a-programacao-python.inline.ciclos-em-python",
+      "current_mastery": 0.4,
+      "decision": "Alternativa",
+      "final_score": 0.08198599589679241,
+      "name": "Ciclos em Python",
+      "penalty": 0.863356673505346,
+      "rank": 6,
+      "structural_readiness": 0.28823237899632626,
+      "uncertainty": 0.48000000000000004,
+      "why": [
+        "Ainda condicionado pelo pré-requisito 'Condicionais em Python' — prontidão insuficiente (0.23)",
+        "Necessidade de aprendizagem: domínio estimado 0.40; lacuna por consolidar 0.60",
+        "Política de decisão 'adaptive': prioridade para aprender 0.082; prioridade para rever 0.039",
+        "Prioridade aumentada porque a estimativa ainda é incerta (0.480)",
+        "Abaixo do limiar (0.50): mantido por soft-gating (k=1.60)"
+      ]
+    }
+  ],
+  "simulation": {
+    "deterministic": true,
+    "event": {
+      "concept_ids": [
+        "introducao-a-programacao-python.inline.condicionais-em-python"
+      ],
+      "content_id": "Introdução à Programação Python/04-condicionais.md",
+      "event_id": "demo-practice-conditionals-001",
+      "event_type": "practice_attempt",
+      "payload": {
+        "confidence": 0.75,
+        "correct": 4.0,
+        "duration_sec": 420.0,
+        "total": 5.0
+      },
+      "source": "demo_academica",
+      "timestamp": "2026-06-22T10:00:00Z"
+    },
+    "event_type_base_weight": 0.7,
+    "raw_event_score": 0.8,
+    "timestamp": "2026-06-22T10:00:00Z",
+    "title": "Atualização de Condicionais em Python após tentativa prática"
+  },
+  "update": {
+    "applied_weight": 0.09466752915440624,
+    "concept_id": "introducao-a-programacao-python.inline.condicionais-em-python",
+    "concept_name": "Condicionais em Python",
+    "difficulty_evidence_after": 3.531199944837858,
+    "difficulty_evidence_before": 3.5,
+    "difficulty_evidence_delta": 0.031199944837857988,
+    "effect": "O desempenho de 4/5 produz evidência favorável ao domínio, mas o limitador inicial mantém a atualização conservadora; uma única tentativa não consolida o conceito.",
+    "mastery_after": 0.4206082730606655,
+    "mastery_before": 0.4166666666666667,
+    "metacognitive_alignment": 0.95,
+    "metacognitive_weight": 0.93429587125,
+    "positive_evidence_after": 2.563467584316548,
+    "positive_evidence_before": 2.5,
+    "positive_evidence_delta": 0.06346758431654825,
+    "score": 0.6704261205870312,
+    "uncertainty_after": 0.41219175279262565,
+    "uncertainty_before": 0.4166666666666667
+  }
+}

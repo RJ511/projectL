@@ -25,7 +25,7 @@ export function mapContentConcept(map) {
 }
 
 export function removeContentConceptMaps(contentId) {
-  return call("olm_remove_content_concept_maps", { content_id: contentId });
+  return call("olm_remove_content_concept_maps", { contentId });
 }
 
 export function ingestEvent(event) {
@@ -57,8 +57,8 @@ export function nextToStudy(options = {}) {
   return call("olm_next_to_study", {
     top,
     lambda,
-    readiness_threshold: threshold,
-    domain_filter: domain,
+    readinessThreshold: threshold,
+    domainFilter: domain,
     exclude,
   });
 }
@@ -100,13 +100,13 @@ export function getDebugRanking(options = {}) {
   } = options;
   return call("olm_get_debug_ranking", {
     top,
-    domain_filter: domainFilter ?? domain_filter,
+    domainFilter: domainFilter ?? domain_filter,
     exclude,
   });
 }
 
 export function getContentMetrics(contentId = null) {
-  return call("olm_get_content_metrics", { content_id: contentId });
+  return call("olm_get_content_metrics", { contentId });
 }
 
 export function nextContentToStudy(options = {}) {
@@ -125,9 +125,9 @@ export function nextContentToStudy(options = {}) {
   return call("olm_next_content_to_study", {
     top,
     lambda,
-    readiness_threshold: readinessThreshold ?? readiness_threshold,
-    domain_filter: domainFilter ?? domain_filter,
-    domain_id: domainId ?? domain_id,
+    readinessThreshold: readinessThreshold ?? readiness_threshold,
+    domainFilter: domainFilter ?? domain_filter,
+    domainId: domainId ?? domain_id,
     exclude,
   });
 }

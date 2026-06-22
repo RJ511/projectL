@@ -546,8 +546,8 @@ export default function AppSettingsPanel({
           </div>
 
           <label style={fieldStyle}>
-            Stop Mastery ({olmConfig.stop_mastery.toFixed(2)}) — oculta raiz
-            acima deste valor
+            Limiar de domínio consolidado ({olmConfig.stop_mastery.toFixed(2)})
+            — oculta conceitos base acima deste valor
             <input
               type="range"
               min={0.5}
@@ -569,7 +569,8 @@ export default function AppSettingsPanel({
               }
             >
               <option value="standard">
-                Beta variance (alpha*beta / ((alpha+beta)^2*(alpha+beta+1)))
+                Variância da estimativa Beta — evidência favorável (α) e
+                evidência de dificuldade (β)
               </option>
             </select>
           </label>

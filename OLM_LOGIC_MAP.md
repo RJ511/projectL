@@ -62,6 +62,21 @@ Interpretação:
 - `mastery` sobe com evidência positiva.
 - `uncertainty` desce quando aumenta a evidência total.
 
+### Terminologia funcional exposta ao utilizador
+
+Os nomes internos e símbolos matemáticos permanecem estáveis no código e na persistência, mas a interface apresenta primeiro o seu significado:
+
+| Nome interno | Nome funcional apresentado | Significado |
+|---|---|---|
+| `alpha` / α | Evidência favorável ao domínio | Massa de evidência compatível com conhecimento ou desempenho correto. |
+| `beta` / β | Evidência de dificuldade ou erro | Massa de evidência compatível com dificuldade, erro ou conhecimento ainda não demonstrado. |
+| `mastery` / m | Domínio estimado | Estimativa atual de conhecimento, calculada a partir das duas massas de evidência. |
+| `uncertainty` / u | Incerteza da estimativa | Grau de confiança do modelo na estimativa de domínio. |
+| `readiness` | Prontidão estrutural | Condição para avançar, considerando o domínio e a incerteza dos pré-requisitos. |
+| `score` | Prioridade de recomendação | Valor comparativo usado para ordenar os próximos conceitos. |
+
+Os símbolos α e β só devem aparecer como referência formal entre parênteses ou no detalhe técnico, nunca como explicação principal.
+
 ## 4.2 Peso base por tipo de evento
 
 Implementado em `event_type_weight`:
