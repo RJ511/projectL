@@ -6,3 +6,5 @@ deny.toml
 storybook-static
 node_modules
 dist/
+/src-tauri/stress_multi.json
+/src-tauri/balanced_multi.json
