@@ -182,7 +182,7 @@ Nem toda a lógica operacional está no `OLM_LOGIC_MAP.md`. Itens hoje implement
 - Alterar hierarquia Root/Domain/Item e renderização: `Main.jsx` + `Sidebar.jsx` + `KnowledgeLevels.jsx`.
 - Alterar contratos frontend↔backend: `src/services/olm.service.jsx` e `src-tauri/src/main.rs`.
 - Alterar política de dados local no root: `src/services/rootDataStore.js`, `src/services/dataPolicy.js`, `src-tauri/src/commands/tree.rs`.
-- Ajustar calibração sintética, baselines e cenários: `scripts/calibrate-meta-strength.mjs` + `src-tauri/src/bin/olm_sim.rs` + `src-tauri/src/commands/olm.rs` (`approach_definitions`, `baseline_scenario_blueprints`, `generated_scenario_blueprints`).
+- Ajustar calibração sintética, baselines e cenários: `scripts/calibrate-meta-strength.mjs` + `src-tauri/src/bin/olm_sim.rs` + `src-tauri/src/commands/olm.rs` (`approach_definitions`, `baseline_scenario_blueprints`, `hard_case_blueprints`, `generated_scenario_blueprints`, `build_calibration_split`).
 
 ## 8) Estado conhecido e manutenção
 

@@ -1,0 +1,32 @@
+Ambos aumentam porque o modelo distribui o peso do evento entre evidência favorável e evidência de dificuldade. β não é uma penalização isolada.
+1. Score efetivo
+Resultado objetivo:
+\[
+s_{raw}=4/5=0{,}80
+\]Como é o primeiro evento, existe pouca evidência histórica. Após fiabilidade metacognitiva, combinação com o resultado objetivo e contração conservadora para 0,5:
+\[
+s_{efetivo}=0{,}6704
+\]Ou seja, 67,04% do peso favorece domínio e 32,96% representa dificuldade residual.
+2. Peso aplicado
+\[
+w_{base}=0{,}70
+\]\[
+w_{confiança}=1-0{,}7|0{,}75-0{,}80|=0{,}965
+\]\[
+w_{meta}=0{,}9343
+\]\[
+w_{bruto}=0{,}70\times0{,}965\times0{,}9343=0{,}6311
+\]Sendo a primeira evidência, aplica-se o limitador inicial de 15%:
+\[
+w_{aplicado}=0{,}6311\times0{,}15=0{,}0947
+\]3. Atualização
+\[
+\Delta\alpha=0{,}0947\times0{,}6704=0{,}0635
+\]\[
+\Delta\beta=0{,}0947\times(1-0{,}6704)=0{,}0312
+\]Assim:
+Evidência favorável: \(2{,}5000 \rightarrow 2{,}5635\)
+Evidência de dificuldade: \(3{,}5000 \rightarrow 3{,}5312\)
+Domínio estimado: \(41{,}67\% \rightarrow 42{,}06\%\)
+Incerteza: \(41{,}67\% \rightarrow 41{,}22\%\)
+β aumenta porque o desempenho não foi perfeito e porque o motor reduz conservadoramente scores extremos quando ainda existe pouca evidência. A maior parte do peso vai para α, portanto o domínio sobe; simultaneamente, o aumento da evidência total reduz a incerteza.

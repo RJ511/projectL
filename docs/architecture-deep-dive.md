@@ -110,8 +110,9 @@ Este e o documento tecnico canonico para arquitetura, logica OLM e decisoes de i
 - O simulador inclui agora politicas adicionais para avaliacao: `random`, `mastery_only`, `uncertainty_only`, `curriculum_linear`, `no_root_penalty` e `no_mapping_penalty`, alem das variacoes com/sem gating e com/sem metacognicao.
 - Modelo de estado com decay in-place: `concept_state.alpha/beta` guardam estado efetivo em `last_update`; antes de ler ou atualizar um conceito, o backend aplica decay de `last_update -> now`, e no update persiste `last_update = now`.
 - Em `ingest_into_store`, quando `event.timestamp` e RFC3339 valido, esse instante passa a ser usado como `last_update`, permitindo testes sinteticos de decay com datas historicas.
-- A simulacao sintetica deixou de derivar `expected_any` dos eventos observados: cada cenario usa `true_mastery` escondida por conceito e define alvos esperados a partir dessa verdade latente.
-- O modo canónico foi expandido para S1-S12 e a calibracao passa a usar treino S1-S8 e teste S9-S12.
+- A simulacao sintetica deixou de derivar `expected_any` dos eventos observados: cada cenario usa `true_mastery` escondida por conceito e define alvos esperados a partir dessa verdade latente. Existe risco conceptual residual porque o oracle e o recomendador partilham a preferencia pedagogica por conceitos fracos e desbloqueados, mas nao reutilizam scores nem estados observados.
+- O modo canónico inclui S1-S12 e hard cases H1-H6. A calibracao usa treino S1-S8/H1-H3 e teste S9-S12/H4-H6; cenarios gerados entram num split deterministico 70/30 em vez de serem omitidos.
+- O relatorio inclui `candidate_count_avg`, `tie_rate`, divergencia de decisao, delta de ranking, influencia metacognitiva e resultados easy/hard. Empates ou diferencas imateriais produzem calibracao `inconclusive`, sem eleger `meta_strength` por desempate.
 - O relatório de simulacao passou a incluir metricas longitudinais agregadas (`avg_learning_gain`, `avg_post_test_score`, `avg_mastery_gain`, `avg_time_to_mastery`, `avg_bad_recommendations`, `prerequisite_violation_rate`) e deltas vs baselines triviais.
 
 ## 6. Riscos tecnicos e pontos de atencao (importante para resolver)

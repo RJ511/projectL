@@ -7,8 +7,8 @@ use rand::{Rng, SeedableRng};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::cmp::Ordering;
-use std::collections::{HashMap, HashSet};
 use std::collections::VecDeque;
+use std::collections::{HashMap, HashSet};
 use std::hash::{DefaultHasher, Hash, Hasher};
 use std::sync::Mutex;
 use tauri::State;
@@ -215,7 +215,7 @@ pub struct NextToStudyItem {
 #[derive(Debug, Clone, Serialize)]
 pub struct IngestResult {
     pub updated_concepts: Vec<String>,
-    pub duplicate:bool,
+    pub duplicate: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -332,6 +332,8 @@ pub struct CustomApproachConfig {
 #[derive(Debug, Clone, Serialize)]
 pub struct ScenarioMetadata {
     pub mode: String,
+    pub difficulty: String,
+    pub case_tags: Vec<String>,
     pub seed: u64,
     pub graph_size: usize,
     pub prereq_density: f64,
@@ -371,6 +373,8 @@ pub struct SimulationScenarioResult {
     pub rank_of_first_expected: Option<usize>,
     pub pass: bool,
     pub hit_at_3: bool,
+    pub candidate_count: usize,
+    pub top_tie: bool,
     pub mrr: f64,
     pub ndcg_at_3: f64,
     pub avg_mastery: f64,
@@ -415,6 +419,13 @@ pub struct SimulationApproachResult {
     pub avg_time_to_mastery: Option<f64>,
     pub avg_bad_recommendations: f64,
     pub prerequisite_violation_rate: f64,
+    pub candidate_count_avg: f64,
+    pub tie_rate: f64,
+    pub easy_case_pass_rate: f64,
+    pub hard_case_pass_rate: f64,
+    pub decision_divergence_rate: f64,
+    pub ranking_delta_vs_baseline: f64,
+    pub meta_influence_rate: f64,
     pub scenarios: Vec<SimulationScenarioResult>,
 }
 
@@ -481,6 +492,17 @@ pub struct SimulationCalibrationSummary {
     pub selected_approach_id: String,
     pub selected_test_pass_rate: f64,
     pub selected_test_avg_mrr: f64,
+    pub status: String,
+    pub rationale: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct DecisionDivergenceSummary {
+    pub reference_approach_id: String,
+    pub compared_approach_id: String,
+    pub changed_decisions: usize,
+    pub scenarios_compared: usize,
+    pub rate: f64,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -492,6 +514,8 @@ pub struct SimulationReport {
     pub calibration: SimulationCalibrationSummary,
     /// Per-scenario cross-approach comparison table.
     pub scenario_comparisons: Vec<ScenarioApproachComparison>,
+    pub decision_divergence: Vec<DecisionDivergenceSummary>,
+    pub evaluation_warnings: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -964,12 +988,15 @@ fn ingest_into_store(
     event: &StudyEvent,
     meta_strength: f64,
 ) -> Result<IngestResult, String> {
-
     if event.event_id.trim().is_empty() {
         return Err("event_id is required".to_string());
     }
 
-    if store.study_events.iter().any(|e| e.event_id == event.event_id) {
+    if store
+        .study_events
+        .iter()
+        .any(|e| e.event_id == event.event_id)
+    {
         return Ok(IngestResult {
             updated_concepts: Vec::new(),
             duplicate: true,
@@ -993,9 +1020,9 @@ fn ingest_into_store(
     }
 
     let valid_mapped_concepts: Vec<(String, f64)> = mapped_concepts
-    .into_iter()
-    .filter(|(concept_id, _)| store.concepts.contains_key(concept_id))
-    .collect();
+        .into_iter()
+        .filter(|(concept_id, _)| store.concepts.contains_key(concept_id))
+        .collect();
 
     if valid_mapped_concepts.is_empty() {
         return Err("Event does not map to any existing concept".to_string());
@@ -1009,7 +1036,8 @@ fn ingest_into_store(
 
     // Fix 4: When mapping resolved via content_id (Tier 2, no explicit concept_ids),
     // apply the mapping quality penalty to w_evidence to reflect weak coverage.
-    let mapping_quality_penalty: f64 = if event.concept_ids.is_empty() && event.content_id.is_some() {
+    let mapping_quality_penalty: f64 = if event.concept_ids.is_empty() && event.content_id.is_some()
+    {
         let raw_weight_sum: f64 = valid_mapped_concepts.iter().map(|(_, w)| w).sum();
         content_mapping_quality(raw_weight_sum, valid_mapped_concepts.len()).penalty
     } else {
@@ -1031,7 +1059,6 @@ fn ingest_into_store(
     };
 
     for (concept_id, mapping_weight) in valid_mapped_concepts {
-
         let prior_entries = store.evidence.get(&concept_id).cloned().unwrap_or_default();
         let prior_evidence_count = prior_entries.len();
         let prior_self_assessment_same_day =
@@ -1298,7 +1325,12 @@ fn next_content_to_study_from_store(
         })
         .collect();
 
-    ranked.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(Ordering::Equal));
+    ranked.sort_by(|a, b| {
+        b.score
+            .partial_cmp(&a.score)
+            .unwrap_or(Ordering::Equal)
+            .then_with(|| a.content_id.cmp(&b.content_id))
+    });
 
     if let Some(limit) = top {
         ranked.truncate(limit);
@@ -1382,13 +1414,8 @@ fn concept_inconsistency_signal(evidence: Option<&Vec<EvidenceChunk>>) -> f64 {
 
 fn ranking_policy_normalized(policy: &str) -> &str {
     match policy {
-        "learn_next"
-        | "review_next"
-        | "balanced"
-        | "random"
-        | "mastery_only"
-        | "uncertainty_only"
-        | "curriculum_linear" => policy,
+        "learn_next" | "review_next" | "balanced" | "random" | "mastery_only"
+        | "uncertainty_only" | "curriculum_linear" => policy,
         _ => "adaptive",
     }
 }
@@ -1516,10 +1543,7 @@ fn rank_next_to_study(
         let mut prereq_details: Vec<(String, f64)> = ancestor_dist
             .iter()
             .map(|(ancestor_id, distance)| {
-                let (m, u) = state_by_id
-                    .get(ancestor_id)
-                    .copied()
-                    .unwrap_or((0.5, 1.0));
+                let (m, u) = state_by_id.get(ancestor_id).copied().unwrap_or((0.5, 1.0));
                 let rp = prereq_readiness(m, u, gamma);
                 let attenuation = delta.powi(*distance as i32);
                 let effective_r = clamp_01(attenuation * rp);
@@ -1536,10 +1560,7 @@ fn rank_next_to_study(
             1.0
         } else {
             let eta = clamp_01(store.config.readiness_blend_eta);
-            let readiness_min = prereq_details
-                .iter()
-                .map(|(_, r)| *r)
-                .fold(1.0, f64::min);
+            let readiness_min = prereq_details.iter().map(|(_, r)| *r).fold(1.0, f64::min);
             let readiness_mean =
                 prereq_details.iter().map(|(_, r)| *r).sum::<f64>() / (prereq_details.len() as f64);
             clamp_01((eta * readiness_min) + ((1.0 - eta) * readiness_mean))
@@ -1591,23 +1612,20 @@ fn rank_next_to_study(
         let decay_signal = concept_decay_signal(raw_mastery, concept_mastery);
         let inconsistency_signal = concept_inconsistency_signal(store.evidence.get(&concept.id));
         let review_signal = clamp_01(
-    (0.60 * concept_uncertainty)
-        + (0.25 * decay_signal)
-        + (0.15 * inconsistency_signal)
-);
+            (0.60 * concept_uncertainty) + (0.25 * decay_signal) + (0.15 * inconsistency_signal),
+        );
 
-let review_score = gate_factor * review_signal * root_multiplier;
+        let review_score = gate_factor * review_signal * root_multiplier;
 
-        let balanced_score =
-            gate_factor
-                * ((lam * (1.0 - concept_mastery)) + ((1.0 - lam) * concept_uncertainty))
-                * root_multiplier;
+        let balanced_score = gate_factor
+            * ((lam * (1.0 - concept_mastery)) + ((1.0 - lam) * concept_uncertainty))
+            * root_multiplier;
 
         let event_count = store
-                    .evidence
-                    .get(&concept.id)
-                    .map(|e| e.len())
-                    .unwrap_or(0);
+            .evidence
+            .get(&concept.id)
+            .map(|e| e.len())
+            .unwrap_or(0);
 
         // Seeded-shuffle random score: pre-computed per concept above.
         // Falls back to a simple hash if ranking_seed was not set (should not happen
@@ -1645,8 +1663,6 @@ let review_score = gate_factor * review_signal * root_multiplier;
                 }
             }
         };
-
-        
 
         // ── Enriched explainability why ────────────────────────────────────
         let mut why = Vec::new();
@@ -1764,7 +1780,12 @@ let review_score = gate_factor * review_signal * root_multiplier;
         candidates_ranked += 1;
     }
 
-    ranked.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(Ordering::Equal));
+    ranked.sort_by(|a, b| {
+        b.score
+            .partial_cmp(&a.score)
+            .unwrap_or(Ordering::Equal)
+            .then_with(|| a.concept_id.cmp(&b.concept_id))
+    });
 
     if let Some(limit) = top {
         ranked.truncate(limit);
@@ -1810,12 +1831,22 @@ fn scenario_ranking_metrics(
         .map(|idx| 1.0 / ((idx + 1) as f64))
         .unwrap_or(0.0);
 
-    let ndcg_at_3 = match rank_of_first_expected {
-        Some(idx) if idx < 3 => {
-            let rank = (idx + 1) as f64;
-            1.0 / (rank + 1.0).log2()
-        }
-        _ => 0.0,
+    let expected_set: HashSet<&str> = expected_any.iter().map(String::as_str).collect();
+    let dcg_at_3: f64 = ranked
+        .iter()
+        .take(3)
+        .enumerate()
+        .filter(|(_, item)| expected_set.contains(item.concept_id.as_str()))
+        .map(|(idx, _)| 1.0 / ((idx + 2) as f64).log2())
+        .sum();
+    let ideal_relevant = expected_any.len().min(3);
+    let idcg_at_3: f64 = (0..ideal_relevant)
+        .map(|idx| 1.0 / ((idx + 2) as f64).log2())
+        .sum();
+    let ndcg_at_3 = if idcg_at_3 > 0.0 {
+        dcg_at_3 / idcg_at_3
+    } else {
+        0.0
     };
 
     (
@@ -1906,13 +1937,18 @@ fn simulate_longitudinal_cycles(
             prereq_violations += 1;
         }
 
-        let latent = scenario.true_mastery.get(&top.concept_id).copied().unwrap_or(0.5);
+        let latent = scenario
+            .true_mastery
+            .get(&top.concept_id)
+            .copied()
+            .unwrap_or(0.5);
         if latent > 0.70 {
             bad_recommendations += 1;
         }
 
-        let practice_score = (0.35 + (0.45 * latent) + (0.20 * ((cycle + 1) as f64 / cycles as f64)))
-            .clamp(0.0, 1.0);
+        let practice_score =
+            (0.35 + (0.45 * latent) + (0.20 * ((cycle + 1) as f64 / cycles as f64)))
+                .clamp(0.0, 1.0);
         let ts = cycle_ts_str;
         let followup = sim_event_at(
             &format!("{}-L", scenario.id),
@@ -1980,35 +2016,58 @@ fn aggregate_subset_metrics(
 }
 
 fn build_calibration_split(scenarios: &[ScenarioBlueprint]) -> (Vec<String>, Vec<String>) {
-    let ids: Vec<String> = scenarios.iter().map(|scenario| scenario.id.clone()).collect();
+    let ids: Vec<String> = scenarios
+        .iter()
+        .map(|scenario| scenario.id.clone())
+        .collect();
     let id_set: HashSet<&str> = ids.iter().map(|id| id.as_str()).collect();
 
     let has_canonical = [
-        "S1", "S2", "S3", "S4", "S5", "S6", "S7", "S8", "S9", "S10", "S11",
-        "S12",
+        "S1", "S2", "S3", "S4", "S5", "S6", "S7", "S8", "S9", "S10", "S11", "S12",
     ]
-        .iter()
-        .all(|id| id_set.contains(id));
+    .iter()
+    .all(|id| id_set.contains(id));
 
     if has_canonical {
-        return (
-            vec![
-                "S1".to_string(),
-                "S2".to_string(),
-                "S3".to_string(),
-                "S4".to_string(),
-                "S5".to_string(),
-                "S6".to_string(),
-                "S7".to_string(),
-                "S8".to_string(),
-            ],
-            vec![
-                "S9".to_string(),
-                "S10".to_string(),
-                "S11".to_string(),
-                "S12".to_string(),
-            ],
-        );
+        let mut train = vec![
+            "S1".to_string(),
+            "S2".to_string(),
+            "S3".to_string(),
+            "S4".to_string(),
+            "S5".to_string(),
+            "S6".to_string(),
+            "S7".to_string(),
+            "S8".to_string(),
+        ];
+        let mut test = vec![
+            "S9".to_string(),
+            "S10".to_string(),
+            "S11".to_string(),
+            "S12".to_string(),
+        ];
+
+        // Generated and hard-case scenarios must not disappear from evaluation.
+        // Keep the split deterministic by scenario id so a scenario family never
+        // moves between train and test merely because HashMap/order changes.
+        let canonical_ids: HashSet<String> = train.iter().chain(test.iter()).cloned().collect();
+        let mut extras: Vec<String> = ids
+            .iter()
+            .filter(|id| !canonical_ids.contains(*id))
+            .cloned()
+            .collect();
+        extras.sort();
+        for (idx, id) in extras.into_iter().enumerate() {
+            if matches!(id.as_str(), "H1" | "H2" | "H3") {
+                train.push(id);
+            } else if matches!(id.as_str(), "H4" | "H5" | "H6") {
+                test.push(id);
+            } else if idx % 10 < 7 {
+                train.push(id);
+            } else {
+                test.push(id);
+            }
+        }
+        return (train, test);
     }
 
     let split_idx = ((ids.len() as f64) * 0.7).round() as usize;
@@ -2147,12 +2206,14 @@ fn expected_any_from_true_mastery(
     pairs.sort_by(|a, b| {
         a.1.partial_cmp(b.1)
             .unwrap_or(Ordering::Equal)
-            .then_with(|| a.0.cmp(b.0))  // stable tie-break by concept id
+            .then_with(|| a.0.cmp(b.0)) // stable tie-break by concept id
     });
 
     let prereqs_dominated = |id: &str| -> bool {
         let prereqs = direct_prereqs.get(id).map(|v| v.as_slice()).unwrap_or(&[]);
-        prereqs.iter().all(|p| true_mastery.get(*p).copied().unwrap_or(0.0) >= 0.60)
+        prereqs
+            .iter()
+            .all(|p| true_mastery.get(*p).copied().unwrap_or(0.0) >= 0.60)
     };
 
     // Priority 1: weak + all direct prereqs dominated
@@ -2170,7 +2231,13 @@ fn expected_any_from_true_mastery(
     // Priority 2: any weak concept (prereqs may not be dominated)
     let any_weak: Vec<String> = pairs
         .iter()
-        .filter_map(|(id, mastery)| if **mastery < 0.55 { Some((*id).clone()) } else { None })
+        .filter_map(|(id, mastery)| {
+            if **mastery < 0.55 {
+                Some((*id).clone())
+            } else {
+                None
+            }
+        })
         .take(3)
         .collect();
 
@@ -2206,7 +2273,11 @@ fn build_chain_with_shortcuts(
     edges
 }
 
-fn canonical_true_mastery(profile: &str, concepts: &[String], rng: &mut StdRng) -> HashMap<String, f64> {
+fn canonical_true_mastery(
+    profile: &str,
+    concepts: &[String],
+    rng: &mut StdRng,
+) -> HashMap<String, f64> {
     let mut map = HashMap::new();
     let n = concepts.len().max(1) as f64;
 
@@ -2214,8 +2285,20 @@ fn canonical_true_mastery(profile: &str, concepts: &[String], rng: &mut StdRng) 
         let t = idx as f64 / n;
         let base = match profile {
             "linear" => (0.88 - (0.55 * t)).clamp(0.15, 0.95),
-            "blocked" => if idx < 2 { 0.20 } else { 0.60 },
-            "core_errors" => if idx == concepts.len() / 2 { 0.15 } else { 0.65 },
+            "blocked" => {
+                if idx < 2 {
+                    0.20
+                } else {
+                    0.60
+                }
+            }
+            "core_errors" => {
+                if idx == concepts.len() / 2 {
+                    0.15
+                } else {
+                    0.65
+                }
+            }
             "high_uncertainty" => {
                 // Deterministic gradient: avoids HashMap-order ties in expected_any.
                 let n = concepts.len().max(1) as f64;
@@ -2223,7 +2306,13 @@ fn canonical_true_mastery(profile: &str, concepts: &[String], rng: &mut StdRng) 
             }
             "overconfidence" => rng.gen_range(0.20_f64..0.45_f64),
             "underconfidence" => rng.gen_range(0.70_f64..0.92_f64),
-            "multi_weak" => if idx % 2 == 0 { 0.30 } else { 0.55 },
+            "multi_weak" => {
+                if idx % 2 == 0 {
+                    0.30
+                } else {
+                    0.55
+                }
+            }
             "advanced_blocked" => {
                 if idx + 1 == concepts.len() {
                     0.20
@@ -2259,18 +2348,126 @@ fn baseline_scenario_blueprints(seed: u64) -> Vec<ScenarioBlueprint> {
     }
 
     let presets = vec![
-        CanonicalPreset { id: "S1",  name: "Progressao linear simples",                  profile: "linear",           graph_size: 12, event_count: 28, prereq_density: 0.30, mapping_quality: 0.90, old_timestamps: false },
-        CanonicalPreset { id: "S2",  name: "Pre-requisito bloqueado",                    profile: "blocked",          graph_size: 14, event_count: 32, prereq_density: 0.50, mapping_quality: 0.90, old_timestamps: false },
-        CanonicalPreset { id: "S3",  name: "Conceito core com erros repetidos",          profile: "core_errors",      graph_size: 14, event_count: 36, prereq_density: 0.50, mapping_quality: 0.90, old_timestamps: false },
-        CanonicalPreset { id: "S4",  name: "Alta incerteza por pouca evidencia",         profile: "high_uncertainty", graph_size: 12, event_count: 20, prereq_density: 0.38, mapping_quality: 0.90, old_timestamps: false },
-        CanonicalPreset { id: "S5",  name: "Overconfidence",                             profile: "overconfidence",   graph_size: 15, event_count: 40, prereq_density: 0.50, mapping_quality: 0.88, old_timestamps: false },
-        CanonicalPreset { id: "S6",  name: "Underconfidence",                            profile: "underconfidence",  graph_size: 15, event_count: 40, prereq_density: 0.50, mapping_quality: 0.88, old_timestamps: false },
-        CanonicalPreset { id: "S7",  name: "Varios conceitos fracos",                    profile: "multi_weak",       graph_size: 16, event_count: 45, prereq_density: 0.55, mapping_quality: 0.90, old_timestamps: false },
-        CanonicalPreset { id: "S8",  name: "Conceito avancado com pre-requisito fraco",  profile: "advanced_blocked", graph_size: 16, event_count: 42, prereq_density: 0.55, mapping_quality: 0.90, old_timestamps: false },
-        CanonicalPreset { id: "S9",  name: "Todos os conceitos quase dominados",         profile: "almost_mastered",  graph_size: 14, event_count: 30, prereq_density: 0.50, mapping_quality: 0.92, old_timestamps: true },
-        CanonicalPreset { id: "S10", name: "Todos os conceitos desconhecidos",           profile: "all_unknown",      graph_size: 14, event_count: 30, prereq_density: 0.50, mapping_quality: 0.92, old_timestamps: true },
-        CanonicalPreset { id: "S11", name: "Conteudo com mapeamento fraco",              profile: "weak_mapping",     graph_size: 12, event_count: 28, prereq_density: 0.45, mapping_quality: 0.35, old_timestamps: false },
-        CanonicalPreset { id: "S12", name: "Conteudo com mapeamento correcto",           profile: "strong_mapping",   graph_size: 12, event_count: 28, prereq_density: 0.45, mapping_quality: 0.95, old_timestamps: false },
+        CanonicalPreset {
+            id: "S1",
+            name: "Progressao linear simples",
+            profile: "linear",
+            graph_size: 12,
+            event_count: 28,
+            prereq_density: 0.30,
+            mapping_quality: 0.90,
+            old_timestamps: false,
+        },
+        CanonicalPreset {
+            id: "S2",
+            name: "Pre-requisito bloqueado",
+            profile: "blocked",
+            graph_size: 14,
+            event_count: 32,
+            prereq_density: 0.50,
+            mapping_quality: 0.90,
+            old_timestamps: false,
+        },
+        CanonicalPreset {
+            id: "S3",
+            name: "Conceito core com erros repetidos",
+            profile: "core_errors",
+            graph_size: 14,
+            event_count: 36,
+            prereq_density: 0.50,
+            mapping_quality: 0.90,
+            old_timestamps: false,
+        },
+        CanonicalPreset {
+            id: "S4",
+            name: "Alta incerteza por pouca evidencia",
+            profile: "high_uncertainty",
+            graph_size: 12,
+            event_count: 20,
+            prereq_density: 0.38,
+            mapping_quality: 0.90,
+            old_timestamps: false,
+        },
+        CanonicalPreset {
+            id: "S5",
+            name: "Overconfidence",
+            profile: "overconfidence",
+            graph_size: 15,
+            event_count: 40,
+            prereq_density: 0.50,
+            mapping_quality: 0.88,
+            old_timestamps: false,
+        },
+        CanonicalPreset {
+            id: "S6",
+            name: "Underconfidence",
+            profile: "underconfidence",
+            graph_size: 15,
+            event_count: 40,
+            prereq_density: 0.50,
+            mapping_quality: 0.88,
+            old_timestamps: false,
+        },
+        CanonicalPreset {
+            id: "S7",
+            name: "Varios conceitos fracos",
+            profile: "multi_weak",
+            graph_size: 16,
+            event_count: 45,
+            prereq_density: 0.55,
+            mapping_quality: 0.90,
+            old_timestamps: false,
+        },
+        CanonicalPreset {
+            id: "S8",
+            name: "Conceito avancado com pre-requisito fraco",
+            profile: "advanced_blocked",
+            graph_size: 16,
+            event_count: 42,
+            prereq_density: 0.55,
+            mapping_quality: 0.90,
+            old_timestamps: false,
+        },
+        CanonicalPreset {
+            id: "S9",
+            name: "Todos os conceitos quase dominados",
+            profile: "almost_mastered",
+            graph_size: 14,
+            event_count: 30,
+            prereq_density: 0.50,
+            mapping_quality: 0.92,
+            old_timestamps: true,
+        },
+        CanonicalPreset {
+            id: "S10",
+            name: "Todos os conceitos desconhecidos",
+            profile: "all_unknown",
+            graph_size: 14,
+            event_count: 30,
+            prereq_density: 0.50,
+            mapping_quality: 0.92,
+            old_timestamps: true,
+        },
+        CanonicalPreset {
+            id: "S11",
+            name: "Conteudo com mapeamento fraco",
+            profile: "weak_mapping",
+            graph_size: 12,
+            event_count: 28,
+            prereq_density: 0.45,
+            mapping_quality: 0.35,
+            old_timestamps: false,
+        },
+        CanonicalPreset {
+            id: "S12",
+            name: "Conteudo com mapeamento correcto",
+            profile: "strong_mapping",
+            graph_size: 12,
+            event_count: 28,
+            prereq_density: 0.45,
+            mapping_quality: 0.95,
+            old_timestamps: false,
+        },
     ];
 
     let mut blueprints = Vec::new();
@@ -2291,7 +2488,8 @@ fn baseline_scenario_blueprints(seed: u64) -> Vec<ScenarioBlueprint> {
 
         if preset.profile == "weak_mapping" || preset.profile == "strong_mapping" {
             for item_idx in 0..3 {
-                let content_id = format!("{}_lesson_{}", preset.id.to_ascii_lowercase(), item_idx + 1);
+                let content_id =
+                    format!("{}_lesson_{}", preset.id.to_ascii_lowercase(), item_idx + 1);
                 content_items.push(ContentItem {
                     id: content_id.clone(),
                     item_type: "lesson".to_string(),
@@ -2335,7 +2533,9 @@ fn baseline_scenario_blueprints(seed: u64) -> Vec<ScenarioBlueprint> {
             let effort = rng.gen_range(0.35_f64..0.95_f64);
             let perceived_score = match preset.profile {
                 "overconfidence" => (confidence + rng.gen_range(0.0_f64..0.15_f64)).clamp(0.0, 1.0),
-                "underconfidence" => (confidence + rng.gen_range(-0.1_f64..0.1_f64)).clamp(0.0, 1.0),
+                "underconfidence" => {
+                    (confidence + rng.gen_range(-0.1_f64..0.1_f64)).clamp(0.0, 1.0)
+                }
                 _ => (observed + rng.gen_range(-0.10_f64..0.10_f64)).clamp(0.0, 1.0),
             };
 
@@ -2376,7 +2576,11 @@ fn baseline_scenario_blueprints(seed: u64) -> Vec<ScenarioBlueprint> {
             } else {
                 None
             };
-            let concept_ids = if use_content { vec![] } else { vec![concept_id.as_str()] };
+            let concept_ids = if use_content {
+                vec![]
+            } else {
+                vec![concept_id.as_str()]
+            };
 
             events.push(sim_event_at(
                 preset.id,
@@ -2402,6 +2606,13 @@ fn baseline_scenario_blueprints(seed: u64) -> Vec<ScenarioBlueprint> {
             events,
             metadata: ScenarioMetadata {
                 mode: "canonical".to_string(),
+                difficulty: if matches!(preset.id, "S4" | "S5" | "S6" | "S7" | "S8" | "S11" | "S12")
+                {
+                    "hard".to_string()
+                } else {
+                    "easy".to_string()
+                },
+                case_tags: vec![preset.profile.to_string()],
                 seed,
                 graph_size: preset.graph_size,
                 prereq_density: preset.prereq_density,
@@ -2413,6 +2624,180 @@ fn baseline_scenario_blueprints(seed: u64) -> Vec<ScenarioBlueprint> {
                 effort_level: 0.70,
                 metacognitive_alignment: 0.65,
                 mapping_quality: preset.mapping_quality,
+            },
+        });
+    }
+
+    blueprints
+}
+
+fn hard_case_blueprints(seed: u64) -> Vec<ScenarioBlueprint> {
+    let cases: Vec<(&str, &str, &str, Vec<f64>)> = vec![
+        (
+            "H1",
+            "Confianca alta com desempenho baixo",
+            "overconfidence_low_performance",
+            vec![0.85, 0.82, 0.15, 0.35, 0.50, 0.62, 0.70, 0.76],
+        ),
+        (
+            "H2",
+            "Confianca baixa com desempenho alto",
+            "underconfidence_high_performance",
+            vec![0.86, 0.80, 0.85, 0.20, 0.42, 0.58, 0.66, 0.72],
+        ),
+        (
+            "H3",
+            "Conceito avancado bloqueado por pre-requisito fraco",
+            "weak_prerequisite_advanced_candidate",
+            vec![0.20, 0.84, 0.10, 0.64, 0.68, 0.30, 0.72, 0.78],
+        ),
+        (
+            "H4",
+            "Revisao incerta versus progressao",
+            "review_vs_progression",
+            vec![0.82, 0.80, 0.70, 0.35, 0.52, 0.60, 0.68, 0.74],
+        ),
+        (
+            "H5",
+            "Multiplos candidatos elegiveis",
+            "multiple_eligible_candidates",
+            vec![0.88, 0.84, 0.18, 0.22, 0.26, 0.45, 0.55, 0.65],
+        ),
+        (
+            "H6",
+            "Sinais objetivos e subjetivos contraditorios",
+            "contradictory_signals",
+            vec![0.86, 0.82, 0.20, 0.30, 0.40, 0.54, 0.64, 0.72],
+        ),
+    ];
+
+    let mut blueprints = Vec::new();
+    for (case_id, name, tag, levels) in cases {
+        let concepts: Vec<String> = (1..=8)
+            .map(|idx| format!("{}_c{}", case_id.to_ascii_lowercase(), idx))
+            .collect();
+        // Two mastered foundations feed six parallel candidates.  This avoids
+        // the trivial single-candidate shape of a pure chain.
+        let mut edges = Vec::new();
+        for target in 2..8 {
+            let prereq = if target < 5 { 0 } else { 1 };
+            edges.push((concepts[prereq].clone(), concepts[target].clone()));
+        }
+        let true_mastery: HashMap<String, f64> = concepts
+            .iter()
+            .cloned()
+            .zip(levels.iter().copied())
+            .collect();
+        let mut expected_any = expected_any_from_true_mastery(&true_mastery, &edges);
+        if case_id == "H4" {
+            // Independent pedagogical oracle: either consolidate the unstable
+            // prior concept or progress to the next weak concept is acceptable.
+            expected_any = vec![concepts[2].clone(), concepts[3].clone()];
+        }
+
+        let mut events = Vec::new();
+        let mut step = 0u32;
+        for concept_idx in 0..concepts.len() {
+            for repeat in 0..6 {
+                if case_id == "H4" && concept_idx == 3 {
+                    continue;
+                }
+                step += 1;
+                let latent = levels[concept_idx];
+                let mut correct = if latent >= 0.5 { 1.0 } else { 0.0 };
+                let mut confidence = if correct > 0.5 { 0.75 } else { 0.30 };
+                let mut perceived = confidence;
+
+                match case_id {
+                    "H1" if concept_idx == 2 => {
+                        correct = 0.0;
+                        confidence = 0.95;
+                        perceived = 0.95;
+                    }
+                    "H2" if concept_idx == 2 => {
+                        correct = 1.0;
+                        confidence = 0.15;
+                        perceived = 0.20;
+                    }
+                    "H4" if concept_idx == 2 => {
+                        correct = if repeat % 2 == 0 { 1.0 } else { 0.0 };
+                        confidence = 0.80;
+                        perceived = if repeat % 2 == 0 { 0.85 } else { 0.75 };
+                    }
+                    "H6" if concept_idx >= 2 => {
+                        correct = if repeat % 3 == 0 { 1.0 } else { 0.0 };
+                        confidence = if correct > 0.5 { 0.20 } else { 0.90 };
+                        perceived = confidence;
+                    }
+                    _ => {}
+                }
+
+                let timestamp = if case_id == "H4" && concept_idx == 2 {
+                    format!("2025-01-{:02}T00:00:00Z", repeat + 1)
+                } else {
+                    format!("2026-02-01T00:{:02}:{:02}Z", (step / 60) % 60, step % 60)
+                };
+                let event_type = if case_id == "H6" {
+                    match repeat % 4 {
+                        0 => "quiz_attempt",
+                        1 => "practice_attempt",
+                        2 => "study_read",
+                        _ => "self_assessment",
+                    }
+                } else {
+                    "practice_attempt"
+                };
+                events.push(sim_event_at(
+                    case_id,
+                    step,
+                    timestamp,
+                    "hard_case",
+                    event_type,
+                    vec![concepts[concept_idx].as_str()],
+                    None,
+                    json!({
+                        "correct": correct,
+                        "total": 1.0,
+                        "confidence": confidence,
+                        "perceived_score": perceived,
+                        "effort": 0.75,
+                        "score": confidence,
+                        "duration_sec": 600.0,
+                        "target_duration_sec": 600.0
+                    }),
+                ));
+            }
+        }
+
+        blueprints.push(ScenarioBlueprint {
+            id: case_id.to_string(),
+            name: name.to_string(),
+            expected_any,
+            true_mastery,
+            concepts,
+            edges,
+            content_items: vec![],
+            content_concepts: vec![],
+            events,
+            metadata: ScenarioMetadata {
+                mode: "hard_case".to_string(),
+                difficulty: "hard".to_string(),
+                case_tags: vec![tag.to_string(), "multi_candidate".to_string()],
+                seed: seeded_scenario_u64(seed, case_id),
+                graph_size: 8,
+                prereq_density: 0.25,
+                depth: 2,
+                event_count: step as usize,
+                event_mix: HashMap::from([("practice_attempt".to_string(), 1.0)]),
+                error_rate: 0.35,
+                confidence_level: 0.65,
+                effort_level: 0.75,
+                metacognitive_alignment: if matches!(case_id, "H1" | "H2" | "H6") {
+                    0.20
+                } else {
+                    0.75
+                },
+                mapping_quality: 1.0,
             },
         });
     }
@@ -2478,8 +2863,8 @@ fn generated_scenario_blueprints(seed: u64, options: &SimulationOptions) -> Vec<
             });
             for concept_id in &concepts {
                 if local_rng.gen_bool(0.5) {
-                    let weight = (local_rng.gen_range(0.2_f64..1.0_f64) * mapping_quality)
-                        .clamp(0.05, 1.0);
+                    let weight =
+                        (local_rng.gen_range(0.2_f64..1.0_f64) * mapping_quality).clamp(0.05, 1.0);
                     content_concepts.push(ContentConceptMap {
                         content_id: content_id.clone(),
                         concept_id: concept_id.clone(),
@@ -2556,6 +2941,12 @@ fn generated_scenario_blueprints(seed: u64, options: &SimulationOptions) -> Vec<
             events,
             metadata: ScenarioMetadata {
                 mode: "generated".to_string(),
+                difficulty: if graph_size >= 8 || metacognitive_alignment < 0.45 {
+                    "hard".to_string()
+                } else {
+                    "easy".to_string()
+                },
+                case_tags: vec!["generated".to_string(), "multi_candidate".to_string()],
                 seed: scenario_seed,
                 graph_size,
                 prereq_density,
@@ -2597,10 +2988,16 @@ fn build_simulation_scenarios(seed: u64, options: &SimulationOptions) -> Vec<Sce
     let mode = options.scenario_mode.trim().to_ascii_lowercase();
 
     match mode.as_str() {
-        "canonical" | "baseline" => baseline_scenario_blueprints(seed),
+        "canonical" | "baseline" => {
+            let mut scenarios = baseline_scenario_blueprints(seed);
+            scenarios.extend(hard_case_blueprints(seed));
+            scenarios
+        }
+        "hard" | "hard_cases" => hard_case_blueprints(seed),
         "generated" => generated_scenario_blueprints(seed, options),
         _ => {
             let mut scenarios = baseline_scenario_blueprints(seed);
+            scenarios.extend(hard_case_blueprints(seed));
             scenarios.extend(generated_scenario_blueprints(seed, options));
             scenarios
         }
@@ -2632,7 +3029,9 @@ fn materialize_scenario(
             match ingest_into_store(store, event, meta_strength) {
                 Ok(_) => {}
                 Err(err)
-                    if err.contains("Event must include concept_ids or a content_id mapped to concepts") =>
+                    if err.contains(
+                        "Event must include concept_ids or a content_id mapped to concepts",
+                    ) =>
                 {
                     continue;
                 }
@@ -2667,7 +3066,9 @@ fn materialize_scenario(
         match ingest_into_store(store, &adapted_event, meta_strength) {
             Ok(_) => {}
             Err(err)
-                if err.contains("Event must include concept_ids or a content_id mapped to concepts") =>
+                if err.contains(
+                    "Event must include concept_ids or a content_id mapped to concepts",
+                ) =>
             {
                 continue;
             }
@@ -2730,7 +3131,12 @@ fn resolve_custom_approach(custom: &CustomApproachConfig) -> DynApproach {
         .iter()
         .find(|a| a.id == requested_base)
         .map(DynApproach::from)
-        .or_else(|| builtin.iter().find(|a| a.id == "no_metacognition").map(DynApproach::from))
+        .or_else(|| {
+            builtin
+                .iter()
+                .find(|a| a.id == "no_metacognition")
+                .map(DynApproach::from)
+        })
         .unwrap_or_else(|| DynApproach::from(&builtin[0]));
     DynApproach {
         id: custom.id.clone(),
@@ -2748,10 +3154,7 @@ fn resolve_custom_approach(custom: &CustomApproachConfig) -> DynApproach {
         readiness_distance_delta: custom
             .readiness_distance_delta
             .unwrap_or(base.readiness_distance_delta),
-        ranking_policy: custom
-            .ranking_policy
-            .clone()
-            .unwrap_or(base.ranking_policy),
+        ranking_policy: custom.ranking_policy.clone().unwrap_or(base.ranking_policy),
         root_penalty: custom.root_penalty.unwrap_or(base.root_penalty),
         meta_strength: custom.meta_strength.unwrap_or(base.meta_strength),
         soft_gate_k: custom.soft_gate_k.or(base.soft_gate_k),
@@ -2862,6 +3265,24 @@ fn build_scenario_comparison(
 
 fn approach_definitions() -> Vec<ApproachConfig> {
     vec![
+        ApproachConfig {
+            id: "baseline",
+            name: "Simple Baseline",
+            description: "Baseline isolado: menor domínio estimado, sem pré-requisitos, metacognição, incerteza ou penalizações avançadas",
+            lambda: 1.0,
+            readiness_threshold: 0.0,
+            min_readiness: 0.0,
+            readiness_gamma: 0.0,
+            readiness_distance_delta: 1.0,
+            ranking_policy: "mastery_only",
+            root_penalty: 0.0,
+            meta_strength: 0.0,
+            soft_gate_k: Some(0.0),
+            stop_mastery: 1.0,
+            decay_enabled: false,
+            decay_half_life_days: 30.0,
+            apply_mapping_penalty: false,
+        },
         ApproachConfig {
             id: "random_baseline",
             name: "Random Baseline",
@@ -3025,9 +3446,9 @@ fn approach_definitions() -> Vec<ApproachConfig> {
             apply_mapping_penalty: true,
         },
         ApproachConfig {
-            id: "metacog_moderate",
-            name: "Metacognition Moderate",
-            description: "Metacognicao moderada (meta_strength=0.6)",
+            id: "metacog_balanced",
+            name: "Metacognition Balanced",
+            description: "Metacognicao equilibrada (meta_strength=0.6)",
             lambda: 0.7,
             readiness_threshold: 0.5,
             min_readiness: 0.1,
@@ -3269,7 +3690,9 @@ pub fn olm_remove_content_concept_maps(
         return Err("content_id is required".to_string());
     }
     let before = store.content_concepts.len();
-    store.content_concepts.retain(|m| m.content_id != content_id);
+    store
+        .content_concepts
+        .retain(|m| m.content_id != content_id);
     Ok(before - store.content_concepts.len())
 }
 
@@ -3378,7 +3801,10 @@ pub fn olm_run_synthetic_scenarios_seeded_with_options(
     let mut approaches: Vec<DynApproach> = if options.custom_approaches_only {
         vec![]
     } else {
-        approach_definitions().iter().map(DynApproach::from).collect()
+        approach_definitions()
+            .iter()
+            .map(DynApproach::from)
+            .collect()
     };
     for custom in &options.custom_approaches {
         approaches.push(resolve_custom_approach(custom));
@@ -3406,6 +3832,12 @@ pub fn olm_run_synthetic_scenarios_seeded_with_options(
         let mut bad_recs_sum = 0usize;
         let mut prereq_violation_sum = 0.0;
         let mut time_to_mastery_values = Vec::new();
+        let mut candidate_count_sum = 0usize;
+        let mut tie_count = 0usize;
+        let mut easy_total = 0usize;
+        let mut easy_passed = 0usize;
+        let mut hard_total = 0usize;
+        let mut hard_passed = 0usize;
 
         for scenario in scenarios.iter() {
             let mut store = OlmStore::default();
@@ -3445,8 +3877,17 @@ pub fn olm_run_synthetic_scenarios_seeded_with_options(
             let (avg_mastery, avg_uncertainty) = average_state(&store);
 
             let top_recommendation = all_ranked.first().map(|item| item.concept_id.clone());
-            let top_recommendations: Vec<String> =
-                all_ranked.iter().take(3).map(|item| item.concept_id.clone()).collect();
+            let top_tie = all_ranked
+                .get(0)
+                .zip(all_ranked.get(1))
+                .map(|(first, second)| (first.score - second.score).abs() <= 1e-9)
+                .unwrap_or(false);
+            let candidate_count = all_ranked.len();
+            let top_recommendations: Vec<String> = all_ranked
+                .iter()
+                .take(3)
+                .map(|item| item.concept_id.clone())
+                .collect();
             let (rank_of_first_expected, pass, hit_at_3, mrr, ndcg_at_3) =
                 scenario_ranking_metrics(&all_ranked, &scenario.expected_any);
             let avg_rank_expected = average_rank_of_expected(&all_ranked, &scenario.expected_any);
@@ -3454,6 +3895,21 @@ pub fn olm_run_synthetic_scenarios_seeded_with_options(
 
             if pass {
                 passed += 1;
+            }
+            if scenario.metadata.difficulty == "hard" {
+                hard_total += 1;
+                if pass {
+                    hard_passed += 1;
+                }
+            } else {
+                easy_total += 1;
+                if pass {
+                    easy_passed += 1;
+                }
+            }
+            candidate_count_sum += candidate_count;
+            if top_tie {
+                tie_count += 1;
             }
             if hit_at_3 {
                 hit_at_3_count += 1;
@@ -3494,6 +3950,8 @@ pub fn olm_run_synthetic_scenarios_seeded_with_options(
                 rank_of_first_expected,
                 pass,
                 hit_at_3,
+                candidate_count,
+                top_tie,
                 mrr,
                 ndcg_at_3,
                 avg_mastery,
@@ -3528,14 +3986,34 @@ pub fn olm_run_synthetic_scenarios_seeded_with_options(
         }
 
         let n = scenarios.len();
-        let pass_rate = if n == 0 { 0.0 } else { passed as f64 / n as f64 };
-        let hit_at_3_rate = if n == 0 { 0.0 } else { hit_at_3_count as f64 / n as f64 };
+        let pass_rate = if n == 0 {
+            0.0
+        } else {
+            passed as f64 / n as f64
+        };
+        let hit_at_3_rate = if n == 0 {
+            0.0
+        } else {
+            hit_at_3_count as f64 / n as f64
+        };
         let avg_mrr = if n == 0 { 0.0 } else { mrr_sum / n as f64 };
         let avg_ndcg_at_3 = if n == 0 { 0.0 } else { ndcg_sum / n as f64 };
         let avg_rank_expected = if n == 0 { 0.0 } else { avg_rank_sum / n as f64 };
-        let avg_learning_gain = if n == 0 { 0.0 } else { longitudinal_gain_sum / n as f64 };
-        let avg_post_test_score = if n == 0 { 0.0 } else { post_test_sum / n as f64 };
-        let avg_mastery_gain = if n == 0 { 0.0 } else { mastery_gain_sum / n as f64 };
+        let avg_learning_gain = if n == 0 {
+            0.0
+        } else {
+            longitudinal_gain_sum / n as f64
+        };
+        let avg_post_test_score = if n == 0 {
+            0.0
+        } else {
+            post_test_sum / n as f64
+        };
+        let avg_mastery_gain = if n == 0 {
+            0.0
+        } else {
+            mastery_gain_sum / n as f64
+        };
         let avg_bad_recommendations = if n == 0 {
             0.0
         } else {
@@ -3550,6 +4028,26 @@ pub fn olm_run_synthetic_scenarios_seeded_with_options(
             None
         } else {
             Some(time_to_mastery_values.iter().sum::<f64>() / (time_to_mastery_values.len() as f64))
+        };
+        let candidate_count_avg = if n == 0 {
+            0.0
+        } else {
+            candidate_count_sum as f64 / n as f64
+        };
+        let tie_rate = if n == 0 {
+            0.0
+        } else {
+            tie_count as f64 / n as f64
+        };
+        let easy_case_pass_rate = if easy_total == 0 {
+            0.0
+        } else {
+            easy_passed as f64 / easy_total as f64
+        };
+        let hard_case_pass_rate = if hard_total == 0 {
+            0.0
+        } else {
+            hard_passed as f64 / hard_total as f64
         };
 
         let (train_pass_rate, _, train_avg_mrr, _) =
@@ -3581,6 +4079,13 @@ pub fn olm_run_synthetic_scenarios_seeded_with_options(
             avg_time_to_mastery,
             avg_bad_recommendations,
             prerequisite_violation_rate: prereq_violation_rate,
+            candidate_count_avg,
+            tie_rate,
+            easy_case_pass_rate,
+            hard_case_pass_rate,
+            decision_divergence_rate: 0.0,
+            ranking_delta_vs_baseline: 0.0,
+            meta_influence_rate: 0.0,
             scenarios: scenario_results,
         });
     }
@@ -3613,6 +4118,102 @@ pub fn olm_run_synthetic_scenarios_seeded_with_options(
         report.metacognition_rank_shift = no_meta_rank - report.average_rank_of_expected;
     }
 
+    let decisions_by_approach: HashMap<String, Vec<Option<String>>> = approach_reports
+        .iter()
+        .map(|report| {
+            (
+                report.approach_id.clone(),
+                report
+                    .scenarios
+                    .iter()
+                    .map(|scenario| scenario.top_recommendation.clone())
+                    .collect(),
+            )
+        })
+        .collect();
+    let simple_baseline_mrr = approach_reports
+        .iter()
+        .find(|report| report.approach_id == "baseline")
+        .map(|report| report.avg_mrr)
+        .unwrap_or(0.0);
+    let simple_baseline_decisions = decisions_by_approach
+        .get("baseline")
+        .cloned()
+        .unwrap_or_default();
+    let no_meta_decisions = decisions_by_approach
+        .get("no_metacognition")
+        .cloned()
+        .unwrap_or_default();
+
+    for report in &mut approach_reports {
+        let decisions = decisions_by_approach
+            .get(&report.approach_id)
+            .cloned()
+            .unwrap_or_default();
+        let compared = decisions.len().min(simple_baseline_decisions.len());
+        let changed = decisions
+            .iter()
+            .zip(simple_baseline_decisions.iter())
+            .take(compared)
+            .filter(|(current, baseline)| current != baseline)
+            .count();
+        report.decision_divergence_rate = if compared == 0 {
+            0.0
+        } else {
+            changed as f64 / compared as f64
+        };
+        report.ranking_delta_vs_baseline = report.avg_mrr - simple_baseline_mrr;
+
+        let meta_compared = decisions.len().min(no_meta_decisions.len());
+        let meta_changed = decisions
+            .iter()
+            .zip(no_meta_decisions.iter())
+            .take(meta_compared)
+            .filter(|(current, no_meta)| current != no_meta)
+            .count();
+        report.meta_influence_rate = if !matches!(
+            report.approach_id.as_str(),
+            "metacog_balanced" | "metacog_strict"
+        ) || meta_compared == 0
+        {
+            0.0
+        } else {
+            meta_changed as f64 / meta_compared as f64
+        };
+    }
+
+    let divergence_pairs = [
+        ("baseline", "no_metacognition"),
+        ("no_metacognition", "metacog_balanced"),
+        ("no_metacognition", "metacog_strict"),
+        ("metacog_balanced", "metacog_strict"),
+    ];
+    let decision_divergence: Vec<DecisionDivergenceSummary> = divergence_pairs
+        .iter()
+        .filter_map(|(reference_id, compared_id)| {
+            let reference = decisions_by_approach.get(*reference_id)?;
+            let compared = decisions_by_approach.get(*compared_id)?;
+            let scenarios_compared = reference.len().min(compared.len());
+            let changed_decisions = reference
+                .iter()
+                .zip(compared.iter())
+                .take(scenarios_compared)
+                .filter(|(left, right)| left != right)
+                .count();
+            Some(DecisionDivergenceSummary {
+                reference_approach_id: (*reference_id).to_string(),
+                compared_approach_id: (*compared_id).to_string(),
+                changed_decisions,
+                scenarios_compared,
+                rate: if scenarios_compared == 0 {
+                    0.0
+                } else {
+                    changed_decisions as f64 / scenarios_compared as f64
+                },
+            })
+        })
+        .collect();
+
     // Build cross-approach comparison table now that all approaches have run.
     let scenario_comparisons: Vec<ScenarioApproachComparison> = scenarios
         .iter()
@@ -3632,8 +4233,18 @@ pub fn olm_run_synthetic_scenarios_seeded_with_options(
         .map(|report| report.approach_id.clone())
         .unwrap_or_else(|| "none".to_string());
 
-    let selected_for_calibration = approach_reports
+    let calibration_candidates: Vec<&SimulationApproachResult> = approach_reports
         .iter()
+        .filter(|report| {
+            matches!(
+                report.approach_id.as_str(),
+                "no_metacognition" | "metacog_balanced" | "metacog_strict"
+            )
+        })
+        .collect();
+    let selected_for_calibration = calibration_candidates
+        .iter()
+        .copied()
         .max_by(|a, b| {
             a.train_pass_rate
                 .partial_cmp(&b.train_pass_rate)
@@ -3651,14 +4262,52 @@ pub fn olm_run_synthetic_scenarios_seeded_with_options(
         })
         .cloned();
 
+    let train_pass_values: Vec<f64> = calibration_candidates
+        .iter()
+        .map(|report| report.train_pass_rate)
+        .collect();
+    let train_mrr_values: Vec<f64> = calibration_candidates
+        .iter()
+        .map(|report| report.train_avg_mrr)
+        .collect();
+    let metric_range = |values: &[f64]| -> f64 {
+        if values.is_empty() {
+            return 0.0;
+        }
+        let min = values.iter().copied().fold(f64::INFINITY, f64::min);
+        let max = values.iter().copied().fold(f64::NEG_INFINITY, f64::max);
+        max - min
+    };
+    let max_meta_influence = calibration_candidates
+        .iter()
+        .map(|report| report.meta_influence_rate)
+        .fold(0.0_f64, f64::max);
+    let calibration_discriminative = metric_range(&train_pass_values) >= 0.02
+        || (metric_range(&train_mrr_values) >= 0.02 && max_meta_influence >= 0.05);
+
     let calibration = if let Some(selected) = selected_for_calibration {
+        let (selected_approach_id, status, rationale) = if calibration_discriminative {
+            (
+                selected.approach_id.clone(),
+                "selected".to_string(),
+                "As abordagens diferem nas métricas de treino; seleção por pass rate e MRR de treino.".to_string(),
+            )
+        } else {
+            (
+                "inconclusive".to_string(),
+                "inconclusive".to_string(),
+                "As abordagens de meta_strength empataram nas métricas de treino; não existe evidência discriminativa para recomendar um valor.".to_string(),
+            )
+        };
         SimulationCalibrationSummary {
             train_scenarios: train_split.clone(),
             test_scenarios: test_split.clone(),
             selection_metric: "train_pass_rate_then_train_avg_mrr_then_hit_at_3_rate".to_string(),
-            selected_approach_id: selected.approach_id,
+            selected_approach_id,
             selected_test_pass_rate: selected.test_pass_rate,
             selected_test_avg_mrr: selected.test_avg_mrr,
+            status,
+            rationale,
         }
     } else {
         SimulationCalibrationSummary {
@@ -3668,8 +4317,27 @@ pub fn olm_run_synthetic_scenarios_seeded_with_options(
             selected_approach_id: "none".to_string(),
             selected_test_pass_rate: 0.0,
             selected_test_avg_mrr: 0.0,
+            status: "inconclusive".to_string(),
+            rationale: "Não existem abordagens elegíveis para calibração.".to_string(),
         }
     };
+
+    let mut evaluation_warnings = Vec::new();
+    if approach_reports
+        .iter()
+        .any(|report| report.candidate_count_avg <= 3.0)
+    {
+        evaluation_warnings.push(
+            "hit@3 pode estar inflacionado: pelo menos uma abordagem avaliou em média três ou menos candidatos."
+                .to_string(),
+        );
+    }
+    if !calibration_discriminative {
+        evaluation_warnings.push(
+            "Calibração não discriminativa: meta_strength não alterou pass rate/MRR de treino."
+                .to_string(),
+        );
+    }
 
     Ok(SimulationReport {
         generated_at,
@@ -3678,6 +4346,8 @@ pub fn olm_run_synthetic_scenarios_seeded_with_options(
         best_approach_id,
         calibration,
         scenario_comparisons,
+        decision_divergence,
+        evaluation_warnings,
     })
 }
 
@@ -3920,22 +4590,76 @@ pub fn olm_get_debug_ranking(
 pub fn run_python_domain_demonstration() -> Result<Value, String> {
     let domain = "introducao-a-programacao-python";
     let concept_specs = vec![
-        ("percurso-de-fundamentos-de-python", "Percurso de fundamentos de Python", "Visão geral e sequência recomendada da coletânea."),
-        ("execucao-e-sintaxe-de-python", "Execução e sintaxe de Python", "Execução de programas, comentários, blocos e indentação."),
-        ("variaveis-e-tipos-basicos-em-python", "Variáveis e tipos básicos em Python", "Representação, atribuição e conversão de valores básicos."),
-        ("operadores-e-interacao-em-python", "Operadores e interação em Python", "Expressões aritméticas, comparações, lógica, entrada e saída."),
-        ("condicionais-em-python", "Condicionais em Python", "Seleção de comportamento com if, elif e else."),
-        ("colecoes-em-python", "Coleções em Python", "Organização de dados em listas, tuplos, dicionários e conjuntos."),
-        ("ciclos-em-python", "Ciclos em Python", "Repetição controlada com for e while."),
-        ("funcoes-em-python", "Funções em Python", "Encapsulamento e reutilização de comportamento."),
-        ("modulos-em-python", "Módulos em Python", "Organização e reutilização de código entre ficheiros."),
-        ("excecoes-em-python", "Exceções em Python", "Tratamento explícito de situações de erro."),
-        ("ficheiros-em-python", "Ficheiros em Python", "Leitura e escrita persistente de dados."),
-        ("classes-e-objetos-em-python", "Classes e objetos em Python", "Modelação simples de entidades, estado e comportamento."),
+        (
+            "percurso-de-fundamentos-de-python",
+            "Percurso de fundamentos de Python",
+            "Visão geral e sequência recomendada da coletânea.",
+        ),
+        (
+            "execucao-e-sintaxe-de-python",
+            "Execução e sintaxe de Python",
+            "Execução de programas, comentários, blocos e indentação.",
+        ),
+        (
+            "variaveis-e-tipos-basicos-em-python",
+            "Variáveis e tipos básicos em Python",
+            "Representação, atribuição e conversão de valores básicos.",
+        ),
+        (
+            "operadores-e-interacao-em-python",
+            "Operadores e interação em Python",
+            "Expressões aritméticas, comparações, lógica, entrada e saída.",
+        ),
+        (
+            "condicionais-em-python",
+            "Condicionais em Python",
+            "Seleção de comportamento com if, elif e else.",
+        ),
+        (
+            "colecoes-em-python",
+            "Coleções em Python",
+            "Organização de dados em listas, tuplos, dicionários e conjuntos.",
+        ),
+        (
+            "ciclos-em-python",
+            "Ciclos em Python",
+            "Repetição controlada com for e while.",
+        ),
+        (
+            "funcoes-em-python",
+            "Funções em Python",
+            "Encapsulamento e reutilização de comportamento.",
+        ),
+        (
+            "modulos-em-python",
+            "Módulos em Python",
+            "Organização e reutilização de código entre ficheiros.",
+        ),
+        (
+            "excecoes-em-python",
+            "Exceções em Python",
+            "Tratamento explícito de situações de erro.",
+        ),
+        (
+            "ficheiros-em-python",
+            "Ficheiros em Python",
+            "Leitura e escrita persistente de dados.",
+        ),
+        (
+            "classes-e-objetos-em-python",
+            "Classes e objetos em Python",
+            "Modelação simples de entidades, estado e comportamento.",
+        ),
     ];
     let edge_specs = vec![
-        ("execucao-e-sintaxe-de-python", "variaveis-e-tipos-basicos-em-python"),
-        ("variaveis-e-tipos-basicos-em-python", "operadores-e-interacao-em-python"),
+        (
+            "execucao-e-sintaxe-de-python",
+            "variaveis-e-tipos-basicos-em-python",
+        ),
+        (
+            "variaveis-e-tipos-basicos-em-python",
+            "operadores-e-interacao-em-python",
+        ),
         ("operadores-e-interacao-em-python", "condicionais-em-python"),
         ("variaveis-e-tipos-basicos-em-python", "colecoes-em-python"),
         ("condicionais-em-python", "ciclos-em-python"),
@@ -3950,18 +4674,78 @@ pub fn run_python_domain_demonstration() -> Result<Value, String> {
         ("colecoes-em-python", "classes-e-objetos-em-python"),
     ];
     let content_specs = vec![
-        ("00-indice.md", "Python — fundamentos", "percurso-de-fundamentos-de-python", "leitura"),
-        ("01-primeiros-passos.md", "Primeiros passos", "execucao-e-sintaxe-de-python", "leitura, exercício"),
-        ("02-variaveis-e-tipos.md", "Variáveis e tipos básicos", "variaveis-e-tipos-basicos-em-python", "leitura, quiz, exercício"),
-        ("03-operadores-entrada-saida.md", "Operadores, entrada e saída", "operadores-e-interacao-em-python", "leitura, quiz, exercício"),
-        ("04-condicionais.md", "Decisões com condicionais", "condicionais-em-python", "leitura, quiz, exercício"),
-        ("05-colecoes.md", "Coleções", "colecoes-em-python", "leitura, quiz, exercício"),
-        ("06-ciclos.md", "Ciclos", "ciclos-em-python", "leitura, exercício"),
-        ("07-funcoes.md", "Funções", "funcoes-em-python", "leitura, exercício"),
-        ("08-modulos.md", "Módulos e importações", "modulos-em-python", "leitura, exercício"),
-        ("09-erros-e-excecoes.md", "Erros e exceções", "excecoes-em-python", "leitura, quiz, exercício"),
-        ("10-ficheiros.md", "Leitura e escrita de ficheiros", "ficheiros-em-python", "leitura, exercício"),
-        ("11-classes-e-objetos.md", "Classes e objetos", "classes-e-objetos-em-python", "leitura, exercício"),
+        (
+            "00-indice.md",
+            "Python — fundamentos",
+            "percurso-de-fundamentos-de-python",
+            "leitura",
+        ),
+        (
+            "01-primeiros-passos.md",
+            "Primeiros passos",
+            "execucao-e-sintaxe-de-python",
+            "leitura, exercício",
+        ),
+        (
+            "02-variaveis-e-tipos.md",
+            "Variáveis e tipos básicos",
+            "variaveis-e-tipos-basicos-em-python",
+            "leitura, quiz, exercício",
+        ),
+        (
+            "03-operadores-entrada-saida.md",
+            "Operadores, entrada e saída",
+            "operadores-e-interacao-em-python",
+            "leitura, quiz, exercício",
+        ),
+        (
+            "04-condicionais.md",
+            "Decisões com condicionais",
+            "condicionais-em-python",
+            "leitura, quiz, exercício",
+        ),
+        (
+            "05-colecoes.md",
+            "Coleções",
+            "colecoes-em-python",
+            "leitura, quiz, exercício",
+        ),
+        (
+            "06-ciclos.md",
+            "Ciclos",
+            "ciclos-em-python",
+            "leitura, exercício",
+        ),
+        (
+            "07-funcoes.md",
+            "Funções",
+            "funcoes-em-python",
+            "leitura, exercício",
+        ),
+        (
+            "08-modulos.md",
+            "Módulos e importações",
+            "modulos-em-python",
+            "leitura, exercício",
+        ),
+        (
+            "09-erros-e-excecoes.md",
+            "Erros e exceções",
+            "excecoes-em-python",
+            "leitura, quiz, exercício",
+        ),
+        (
+            "10-ficheiros.md",
+            "Leitura e escrita de ficheiros",
+            "ficheiros-em-python",
+            "leitura, exercício",
+        ),
+        (
+            "11-classes-e-objetos.md",
+            "Classes e objetos",
+            "classes-e-objetos-em-python",
+            "leitura, exercício",
+        ),
     ];
 
     let full_id = |slug: &str| format!("{}.inline.{}", domain, slug);
@@ -3971,11 +4755,14 @@ pub fn run_python_domain_demonstration() -> Result<Value, String> {
 
     for (slug, name, description) in &concept_specs {
         let id = full_id(slug);
-        store.concepts.insert(id.clone(), Concept {
-            id,
-            name: (*name).to_string(),
-            description: Some((*description).to_string()),
-        });
+        store.concepts.insert(
+            id.clone(),
+            Concept {
+                id,
+                name: (*name).to_string(),
+                description: Some((*description).to_string()),
+            },
+        );
     }
     for (prereq, target) in &edge_specs {
         store.edges.push(ConceptEdge {
@@ -3985,12 +4772,15 @@ pub fn run_python_domain_demonstration() -> Result<Value, String> {
     }
     for (file, title, concept_slug, _) in &content_specs {
         let content_id = format!("Introdução à Programação Python/{}", file);
-        store.content_items.insert(content_id.clone(), ContentItem {
-            id: content_id.clone(),
-            item_type: "note".to_string(),
-            title: (*title).to_string(),
-            domain_id: Some(domain.to_string()),
-        });
+        store.content_items.insert(
+            content_id.clone(),
+            ContentItem {
+                id: content_id.clone(),
+                item_type: "note".to_string(),
+                title: (*title).to_string(),
+                domain_id: Some(domain.to_string()),
+            },
+        );
         store.content_concepts.push(ContentConceptMap {
             content_id,
             concept_id: full_id(concept_slug),
@@ -4013,15 +4803,21 @@ pub fn run_python_domain_demonstration() -> Result<Value, String> {
         ("classes-e-objetos-em-python", 1.0, 2.5),
     ];
     for (slug, positive_evidence, difficulty_evidence) in initial_states {
-        store.concept_state.insert(full_id(slug), ConceptState {
-            alpha: positive_evidence,
-            beta: difficulty_evidence,
-            last_update: Some("2026-06-22T09:00:00Z".to_string()),
-        });
+        store.concept_state.insert(
+            full_id(slug),
+            ConceptState {
+                alpha: positive_evidence,
+                beta: difficulty_evidence,
+                last_update: Some("2026-06-22T09:00:00Z".to_string()),
+            },
+        );
     }
 
     let target_id = full_id("condicionais-em-python");
-    let before = store.concept_state.get(&target_id).cloned()
+    let before = store
+        .concept_state
+        .get(&target_id)
+        .cloned()
         .ok_or_else(|| "Estado inicial do conceito não encontrado".to_string())?;
     let event = StudyEvent {
         event_id: "demo-practice-conditionals-001".to_string(),
@@ -4035,9 +4831,16 @@ pub fn run_python_domain_demonstration() -> Result<Value, String> {
     let raw_event_score = event_score(&event);
     let meta_strength = store.config.meta_strength;
     ingest_into_store(&mut store, &event, meta_strength)?;
-    let after = store.concept_state.get(&target_id).cloned()
+    let after = store
+        .concept_state
+        .get(&target_id)
+        .cloned()
         .ok_or_else(|| "Estado atualizado do conceito não encontrado".to_string())?;
-    let evidence = store.evidence.get(&target_id).and_then(|rows| rows.last()).cloned()
+    let evidence = store
+        .evidence
+        .get(&target_id)
+        .and_then(|rows| rows.last())
+        .cloned()
         .ok_or_else(|| "Evidência da simulação não encontrada".to_string())?;
 
     let exclude = HashSet::new();
@@ -4057,33 +4860,45 @@ pub fn run_python_domain_demonstration() -> Result<Value, String> {
         Some("introducao-a-programacao-python."),
     );
 
-    let concept_rows: Vec<Value> = concept_specs.iter().map(|(slug, name, description)| {
-        let prerequisites: Vec<String> = edge_specs.iter()
-            .filter(|(_, target)| target == slug)
-            .filter_map(|(prereq, _)| concept_specs.iter()
-                .find(|(candidate, _, _)| candidate == prereq)
-                .map(|(_, prereq_name, _)| (*prereq_name).to_string()))
-            .collect();
-        let contents: Vec<String> = content_specs.iter()
-            .filter(|(_, _, concept, _)| concept == slug)
-            .map(|(file, _, _, _)| (*file).to_string())
-            .collect();
-        json!({
-            "id": full_id(slug), "name": name, "description": description,
-            "prerequisites": prerequisites, "contents": contents,
+    let concept_rows: Vec<Value> = concept_specs
+        .iter()
+        .map(|(slug, name, description)| {
+            let prerequisites: Vec<String> = edge_specs
+                .iter()
+                .filter(|(_, target)| target == slug)
+                .filter_map(|(prereq, _)| {
+                    concept_specs
+                        .iter()
+                        .find(|(candidate, _, _)| candidate == prereq)
+                        .map(|(_, prereq_name, _)| (*prereq_name).to_string())
+                })
+                .collect();
+            let contents: Vec<String> = content_specs
+                .iter()
+                .filter(|(_, _, concept, _)| concept == slug)
+                .map(|(file, _, _, _)| (*file).to_string())
+                .collect();
+            json!({
+                "id": full_id(slug), "name": name, "description": description,
+                "prerequisites": prerequisites, "contents": contents,
+            })
         })
-    }).collect();
+        .collect();
 
-    let content_rows: Vec<Value> = content_specs.iter().map(|(file, title, concept_slug, evidence_types)| {
-        let concept_name = concept_specs.iter()
-            .find(|(slug, _, _)| slug == concept_slug)
-            .map(|(_, name, _)| *name)
-            .unwrap_or(*concept_slug);
-        json!({
-            "file": file, "title": title, "concepts": [concept_name],
-            "content_type": "Nota Markdown interativa", "possible_evidence": evidence_types,
+    let content_rows: Vec<Value> = content_specs
+        .iter()
+        .map(|(file, title, concept_slug, evidence_types)| {
+            let concept_name = concept_specs
+                .iter()
+                .find(|(slug, _, _)| slug == concept_slug)
+                .map(|(_, name, _)| *name)
+                .unwrap_or(*concept_slug);
+            json!({
+                "file": file, "title": title, "concepts": [concept_name],
+                "content_type": "Nota Markdown interativa", "possible_evidence": evidence_types,
+            })
         })
-    }).collect();
+        .collect();
 
     let ranking_rows: Vec<Value> = ranking.iter().enumerate().map(|(index, candidate)| {
         let penalty = 1.0 - clamp_01(candidate.gate_factor * candidate.score_decomposition.root_multiplier);
@@ -4139,12 +4954,17 @@ mod tests {
     fn python_domain_demonstration_updates_state_and_ranks_conditionals_first() {
         let report = run_python_domain_demonstration().expect("demo should run");
         let update = &report["update"];
-        assert!(update["positive_evidence_after"].as_f64().unwrap()
-            > update["positive_evidence_before"].as_f64().unwrap());
-        assert!(update["mastery_after"].as_f64().unwrap()
-            > update["mastery_before"].as_f64().unwrap());
-        assert!(update["uncertainty_after"].as_f64().unwrap()
-            < update["uncertainty_before"].as_f64().unwrap());
+        assert!(
+            update["positive_evidence_after"].as_f64().unwrap()
+                > update["positive_evidence_before"].as_f64().unwrap()
+        );
+        assert!(
+            update["mastery_after"].as_f64().unwrap() > update["mastery_before"].as_f64().unwrap()
+        );
+        assert!(
+            update["uncertainty_after"].as_f64().unwrap()
+                < update["uncertainty_before"].as_f64().unwrap()
+        );
         assert_eq!(
             report["recommendation_ranking"][0]["name"].as_str(),
             Some("Condicionais em Python")
@@ -4852,12 +5672,12 @@ mod tests {
             None,
         );
 
-        let stable = ranked.iter().find(|row| row.concept_id == "stable").unwrap();
+        let stable = ranked
+            .iter()
+            .find(|row| row.concept_id == "stable")
+            .unwrap();
         assert!(
-            stable
-                .why
-                .iter()
-                .any(|line| line.contains("adaptive")),
+            stable.why.iter().any(|line| line.contains("adaptive")),
             "adaptive policy diagnostics should be present"
         );
     }
@@ -5131,7 +5951,7 @@ mod tests {
     }
 
     #[test]
-    fn test_build_simulation_scenarios_canonical_mode_only_returns_baseline() {
+    fn test_build_simulation_scenarios_canonical_mode_includes_hard_cases() {
         let options = SimulationOptions {
             generated_scenarios: 10,
             scenario_mode: "canonical".to_string(),
@@ -5139,10 +5959,64 @@ mod tests {
         };
 
         let scenarios = build_simulation_scenarios(7, &options);
-        assert_eq!(scenarios.len(), 6);
+        assert_eq!(scenarios.len(), 18);
+        assert_eq!(
+            scenarios
+                .iter()
+                .filter(|scenario| scenario.metadata.mode == "canonical")
+                .count(),
+            12
+        );
+        assert_eq!(
+            scenarios
+                .iter()
+                .filter(|scenario| scenario.metadata.mode == "hard_case")
+                .count(),
+            6
+        );
         assert!(scenarios
             .iter()
-            .all(|scenario| scenario.metadata.mode == "baseline"));
+            .filter(|scenario| scenario.metadata.mode == "hard_case")
+            .all(|scenario| scenario.metadata.difficulty == "hard"
+                && scenario
+                    .metadata
+                    .case_tags
+                    .contains(&"multi_candidate".to_string())));
+    }
+
+    #[test]
+    fn test_calibration_split_is_disjoint_and_keeps_all_scenarios() {
+        let options = SimulationOptions {
+            generated_scenarios: 8,
+            scenario_mode: "mixed".to_string(),
+            ..SimulationOptions::default()
+        };
+        let scenarios = build_simulation_scenarios(19, &options);
+        let (train, test) = build_calibration_split(&scenarios);
+        let train_set: HashSet<&str> = train.iter().map(String::as_str).collect();
+        let test_set: HashSet<&str> = test.iter().map(String::as_str).collect();
+
+        assert!(train_set.is_disjoint(&test_set));
+        assert_eq!(train.len() + test.len(), scenarios.len());
+        assert!(train_set.contains("H1"));
+        assert!(test_set.contains("H4"));
+        assert!(train
+            .iter()
+            .chain(test.iter())
+            .any(|id| id.starts_with('G')));
+    }
+
+    #[test]
+    fn test_meta_calibration_is_inconclusive_without_material_separation() {
+        let report = olm_run_synthetic_scenarios_seeded(0).expect("simulation should run");
+        assert_eq!(report.calibration.status, "inconclusive");
+        assert_eq!(report.calibration.selected_approach_id, "inconclusive");
+        assert!(report
+            .decision_divergence
+            .iter()
+            .any(
+                |row| row.reference_approach_id == "no_metacognition" && row.changed_decisions > 0
+            ));
     }
 
     #[test]
@@ -5164,7 +6038,9 @@ mod tests {
             coverage_weight: 1.0,
         });
 
-        store.content_concepts.retain(|m| m.content_id != "doc/a.md");
+        store
+            .content_concepts
+            .retain(|m| m.content_id != "doc/a.md");
 
         assert_eq!(store.content_concepts.len(), 1);
         assert_eq!(store.content_concepts[0].content_id, "doc/b.md");
@@ -5240,7 +6116,10 @@ mod tests {
         assert!(applied_c1 > 0.0);
         assert!(applied_c2 > 0.0);
         assert!(quality_penalty < 1.0);
-        assert!(applied_c1 < 1.0, "quality penalty and safety should bound applied weight");
+        assert!(
+            applied_c1 < 1.0,
+            "quality penalty and safety should bound applied weight"
+        );
     }
 
     #[test]
@@ -5302,7 +6181,11 @@ mod tests {
         let removed = before - store.content_concepts.len();
 
         assert_eq!(removed, 2, "should remove both file-a entries");
-        assert_eq!(store.content_concepts.len(), 1, "file-b entry should remain");
+        assert_eq!(
+            store.content_concepts.len(),
+            1,
+            "file-b entry should remain"
+        );
         assert_eq!(store.content_concepts[0].content_id, "file-b");
     }
 
@@ -5315,8 +6198,14 @@ mod tests {
             coverage_weight: 1.0,
         });
         let before = store.content_concepts.len();
-        store.content_concepts.retain(|m| m.content_id != "unknown-file");
-        assert_eq!(store.content_concepts.len(), before, "nothing removed for unknown content_id");
+        store
+            .content_concepts
+            .retain(|m| m.content_id != "unknown-file");
+        assert_eq!(
+            store.content_concepts.len(),
+            before,
+            "nothing removed for unknown content_id"
+        );
     }
 
     // ── Fix 4: mapping quality penalty on ingest ─────────────────────────────
@@ -5327,7 +6216,11 @@ mod tests {
             let mut store = OlmStore::default();
             store.concepts.insert(
                 "c1".to_string(),
-                Concept { id: "c1".to_string(), name: "C1".to_string(), description: None },
+                Concept {
+                    id: "c1".to_string(),
+                    name: "C1".to_string(),
+                    description: None,
+                },
             );
             store.content_items.insert(
                 "file-a".to_string(),
@@ -5406,11 +6299,19 @@ mod tests {
         let mut store = OlmStore::default();
         store.concepts.insert(
             "c1".to_string(),
-            Concept { id: "c1".to_string(), name: "C1".to_string(), description: None },
+            Concept {
+                id: "c1".to_string(),
+                name: "C1".to_string(),
+                description: None,
+            },
         );
         store.concepts.insert(
             "c2".to_string(),
-            Concept { id: "c2".to_string(), name: "C2".to_string(), description: None },
+            Concept {
+                id: "c2".to_string(),
+                name: "C2".to_string(),
+                description: None,
+            },
         );
         store.content_items.insert(
             "note".to_string(),
@@ -5432,20 +6333,39 @@ mod tests {
             coverage_weight: 0.2,
         });
 
-        let maps = normalize_maps(&store, &StudyEvent {
-            event_id: "e1".to_string(),
-            timestamp: "2026-01-01T00:00:00Z".to_string(),
-            source: "test".to_string(),
-            event_type: "review".to_string(),
-            content_id: Some("note".to_string()),
-            concept_ids: vec![],
-            payload: json!({}),
-        });
+        let maps = normalize_maps(
+            &store,
+            &StudyEvent {
+                event_id: "e1".to_string(),
+                timestamp: "2026-01-01T00:00:00Z".to_string(),
+                source: "test".to_string(),
+                event_type: "review".to_string(),
+                content_id: Some("note".to_string()),
+                concept_ids: vec![],
+                payload: json!({}),
+            },
+        );
 
-        let c1_weight = maps.iter().find(|(id, _)| id == "c1").map(|(_, w)| *w).unwrap();
-        let c2_weight = maps.iter().find(|(id, _)| id == "c2").map(|(_, w)| *w).unwrap();
+        let c1_weight = maps
+            .iter()
+            .find(|(id, _)| id == "c1")
+            .map(|(_, w)| *w)
+            .unwrap();
+        let c2_weight = maps
+            .iter()
+            .find(|(id, _)| id == "c2")
+            .map(|(_, w)| *w)
+            .unwrap();
 
-        assert!((c1_weight - 0.8).abs() < 1e-9, "c1 weight should be 0.8 after normalisation, got {}", c1_weight);
-        assert!((c2_weight - 0.2).abs() < 1e-9, "c2 weight should be 0.2 after normalisation, got {}", c2_weight);
+        assert!(
+            (c1_weight - 0.8).abs() < 1e-9,
+            "c1 weight should be 0.8 after normalisation, got {}",
+            c1_weight
+        );
+        assert!(
+            (c2_weight - 0.2).abs() < 1e-9,
+            "c2 weight should be 0.2 after normalisation, got {}",
+            c2_weight
+        );
     }
 }

@@ -637,11 +637,11 @@ Parâmetros úteis para gerar muitos casos distintos rapidamente:
 - `--profile quick|balanced|stress` (presets de volume/densidade)
 - `--generated-scenarios N` (quantidade adicional de cenários sintéticos)
 - `--graph-size N`, `--event-count N`, `--prereq-density X`, `--depth N`, `--mapping-quality X`
-- `--scenario-mode mixed|canonical|generated` (misto, apenas cenários canónicos, ou apenas gerados)
+- `--scenario-mode mixed|canonical|hard|generated` (misto, canónicos + hard cases, apenas hard cases, ou apenas gerados)
 
 ### 13.1 Approaches atuais
 
-O simulador inclui baselines obrigatórios + ablações explícitas. Os parâmetros estruturais (`stop_mastery`, `min_readiness`, `soft_gate_k`, `lambda`, `readiness_threshold`) são normalizados entre as ablações de metacognição para que apenas `meta_strength` varie:
+O simulador inclui baselines obrigatórios + ablações explícitas. `baseline` é deliberadamente simples (`score = 1 - mastery`, sem gating, readiness avançado, incerteza, metacognição, penalização de raiz ou de mapeamento). Os parâmetros estruturais (`stop_mastery`, `min_readiness`, `soft_gate_k`, `lambda`, `readiness_threshold`) são normalizados entre as ablações de metacognição para que apenas `meta_strength` varie:
 
 1. `random_baseline` — **shuffle seeded** por (cenário, seed): permutação verdadeiramente aleatória, reproducível; eliminada a implementação anterior baseada em hash determinístico por conceito
 2. `mastery_only` — `score = 1 - mastery` (sem readiness/uncertainty, `soft_gate_k=0`)
@@ -652,7 +652,7 @@ O simulador inclui baselines obrigatórios + ablações explícitas. Os parâmet
 7. `no_prereq_gating` — lógica balanced com gating desligado (`min_readiness=0`, `soft_gate_k=0`)
 8. `no_mapping_penalty` — ablação sem penalização de qualidade de mapeamento
 9. `no_metacognition` — ablação explícita (`meta_strength=0`); parâmetros de referência: `stop_mastery=0.85`, `soft_gate_k=1.6`, `lambda=0.7`, `readiness_threshold=0.5`
-10. `metacog_moderate` — metacognição moderada (`meta_strength=0.6`); parâmetros idênticos a `no_metacognition`
+10. `metacog_balanced` — metacognição equilibrada (`meta_strength=0.6`); parâmetros idênticos a `no_metacognition`
 11. `metacog_strict` — metacognição forte (`meta_strength=1.0`); parâmetros idênticos a `no_metacognition`
 12. `decay_hl7` — decay ativo (`half_life_days=7`)
 13. `decay_hl30` — decay ativo (`half_life_days=30`)
@@ -678,6 +678,8 @@ O modo canónico foi expandido para 12 cenários (6-10 conceitos, 10-24 eventos)
 
 Nos cenários S9/S10 existem timestamps antigos (`2025-01-01`, `2025-06-01`, `2026-01-01`) para exercício de decay temporal.
 
+O modo canónico inclui ainda H1–H6: overconfidence, underconfidence, pré-requisito fraco, revisão vs progressão, 5–8 candidatos elegíveis e sinais objetivos/subjetivos contraditórios. Estes casos usam duas fundações e seis candidatos paralelos para evitar o caso trivial de uma única resposta óbvia.
+
 ### 13.2.1 `expected_any` com readiness pedagógico
 
 O ground truth `expected_any` usa a função `expected_any_from_true_mastery(true_mastery, edges)`.
@@ -697,6 +699,8 @@ Por approach, devolve:
 - `hit_at_1_rate` (equivalente a `pass_rate`, mantido por compatibilidade)
 - `pass_rate` documentado explicitamente como Hit@1
 - `hit_at_3_rate`, `avg_mrr`, `avg_ndcg_at_3`
+- `candidate_count_avg`, `tie_rate`, `easy_case_pass_rate`, `hard_case_pass_rate`
+- `decision_divergence_rate`, `ranking_delta_vs_baseline`, `meta_influence_rate`
 - `average_rank_of_expected`
 - métricas treino/teste (`train_pass_rate`, `test_pass_rate`, `train_avg_mrr`, `test_avg_mrr`)
 - deltas face a baselines: `random_baseline_delta`, `mastery_baseline_delta`, `uncertainty_baseline_delta`
@@ -714,9 +718,10 @@ Por approach, devolve:
   - `top_candidates` com score/readiness/mastery/uncertainty
 - `best_approach_id` no relatório final
 - bloco `calibration`:
-  - em cenários canónicos, seleção no treino S1–S8 e leitura no teste S9–S12;
-  - em cenários gerados (`G*`), split automático 70/30 (treino/teste) por ordem de cenário;
-  - métrica de seleção: `train_pass_rate` (Hit@1) -> `train_avg_mrr` -> `hit_at_3_rate`.
+  - treino S1–S8 + H1–H3 e teste S9–S12 + H4–H6;
+  - cenários gerados (`G*`) entram também num split determinístico 70/30, sem sobreposição;
+  - métrica de seleção: `train_pass_rate` (Hit@1) -> `train_avg_mrr` -> `hit_at_3_rate`;
+  - se a diferença de treino não for material, `status=inconclusive` e nenhum `meta_strength` é recomendado por desempate.
 
 ---
 
@@ -747,11 +752,12 @@ npm run calibrate:meta
 Multi-seed agrega métricas (pass_rate, hit@3, MRR, nDCG@3) por approach sobre N execuções.  
 As execuções usam seed para perturbar ligeiramente os estados dos cenários (de forma reproduzível por seed/cenário), permitindo variância real em multi-seed.
 
-O pipeline `calibrate:meta` grava automaticamente três artefactos em `docs/reports/`:
+O pipeline `calibrate:meta` grava automaticamente dois artefactos em `docs/reports/`:
 
-- `meta-strength-calibration-YYYY-MM-DD.raw.json`
 - `meta-strength-calibration-YYYY-MM-DD.json`
 - `meta-strength-calibration-YYYY-MM-DD.md`
+
+O payload completo por seed pode ser mantido com `--keep-raw`; por omissão é removido após agregação para evitar artefactos superiores a 100 MB.
 
 Estes ficheiros servem de base para recomendar default de `meta_strength` em ambientes de teste/sintéticos e auditar estabilidade entre seeds.
 

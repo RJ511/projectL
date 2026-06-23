@@ -123,9 +123,8 @@ Falha se houver alterações de código sem alteração de documentação canón
 npm run calibrate:meta
 ```
 
-Gera relatório versionado em `docs/reports/`:
+Gera relatório versionado em `docs/reports/` (10 seeds por omissão):
 
-- `meta-strength-calibration-YYYY-MM-DD.raw.json` (payload completo por seed)
 - `meta-strength-calibration-YYYY-MM-DD.json` (sumário agregado)
 - `meta-strength-calibration-YYYY-MM-DD.md` (recomendação legível)
 
@@ -133,13 +132,14 @@ Parâmetros opcionais:
 
 - `node scripts/calibrate-meta-strength.mjs --start 0 --end 29`
 - `node scripts/calibrate-meta-strength.mjs --start 10 --end 59 --out-dir docs/reports`
+- `node scripts/calibrate-meta-strength.mjs --keep-raw` (mantém o payload completo intermédio; pode exceder 100 MB)
 
 ### Avaliação sintética final (tese)
 
 ```bash
 cd src-tauri
 
-# canónicos (S1-S12)
+# canónicos (S1-S12) + hard cases (H1-H6)
 cargo run --bin olm_sim -- --scenario-mode canonical --json -o canonical.json
 
 # multi-seed balanced
